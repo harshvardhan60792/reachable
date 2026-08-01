@@ -19,10 +19,17 @@ from typing import List, Optional
 from .callgraph import iter_python_files, rel_path
 from .models import Finding
 
-# name of assignment target -> looks like a credential
-SECRET_NAME = re.compile(
-    r"(password|passwd|pwd|secret|token|api_?key|access_?key|private_?key|auth)", re.I
-)
+# Words that mean "this holds a credential", matched against whole identifier segments.
+# Substring matching was a mistake: `auth` fired on `__author__` and on Sphinx's `author =
+# "..."`, flagging every project's byline as a leaked secret.
+SECRET_WORDS = {
+    "password", "passwd", "pwd", "secret", "token", "apikey", "accesskey",
+    "privatekey", "auth", "credential", "credentials", "passphrase", "apisecret",
+    "clientsecret", "authtoken", "sessionkey",
+}
+
+_CAMEL = re.compile(r"([a-z0-9])([A-Z])")
+_SPLIT = re.compile(r"[^a-z0-9]+")
 # Obvious placeholders that are not real leaks. Docs, templates and test fixtures are full of
 # these, and flagging them trains people to ignore the tool -- which costs more than the one
 # real key it might catch.
@@ -80,7 +87,10 @@ class _Rules(ast.NodeVisitor):
                           "subprocess called with shell=True; a tainted argument becomes "
                           "command injection")
 
-        if name in ("os.system", "os.popen") or short == "system":
+        # `platform.system()` returns the OS name and is completely harmless. Matching the
+        # bare short name flagged it in both requests and httpie, so the module must match:
+        # either an explicit `os.` prefix, or an undotted call from `from os import system`.
+        if name in ("os.system", "os.popen") or (short in ("system", "popen") and "." not in name):
             self._add(node, "os-system", HIGH,
                       "os.system passes its argument to a shell")
 
@@ -128,7 +138,7 @@ class _Rules(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
             name = _src(target)
-            if not SECRET_NAME.search(name):
+            if not _looks_like_credential(name):
                 continue
             value = node.value
             if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
@@ -138,6 +148,18 @@ class _Rules(ast.NodeVisitor):
             self._add(node, "hardcoded-secret", HIGH,
                       "credential-looking literal assigned to '%s'" % name)
         self.generic_visit(node)
+
+
+def _looks_like_credential(name: str) -> bool:
+    """Match whole segments of an identifier, never substrings.
+
+    `api_key` and `apiKey` both split to {api, key} and join to `apikey`; `__author__` splits
+    to {author} and matches nothing.
+    """
+    parts = [p for p in _SPLIT.split(_CAMEL.sub(r"\1_\2", name).lower()) if p]
+    if set(parts) & SECRET_WORDS:
+        return True
+    return any(parts[i] + parts[i + 1] in SECRET_WORDS for i in range(len(parts) - 1))
 
 
 def _src(node: Optional[ast.AST]) -> str:

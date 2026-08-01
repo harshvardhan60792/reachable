@@ -199,27 +199,42 @@ pitch. Build it only if a specific judge or org asks for the enterprise angle.
 
 ## Validation
 
-Run against two real repositories, chosen to sit at opposite ends of the quality range:
+Five real repositories, every verdict hand-audited against source. Full write-up in
+**VERIFICATION.md** — read that before trusting these numbers or changing the resolution rules.
 
-| Repo | Files | Functions | Entry points | Reachable functions | Findings | Reachable |
-|---|---|---|---|---|---|---|
-| pallets/flask | 83 | 1428 | 504 | 815 (57%) | 6 | 2 |
-| adeyosemanputra/pygoat | 80 | 180 | 134 | 168 (93%) | 18 | 13 |
+| Repo | Findings | REACHABLE | UNREACHABLE | UNKNOWN | Functions | Entry points | Runtime |
+|---|---|---|---|---|---|---|---|
+| pallets/flask | 6 | 3 | 3 | 0 | 1428 | 560 | 3.4s |
+| adeyosemanputra/pygoat | 15 | 12 | 0 | 3 | 180 | 134 | 1.1s |
+| psf/requests | 17 | 0 | 13 | 4 | 691 | 59 | 1.8s |
+| httpie/cli | 4 | 2 | 0 | 2 | 1062 | 100 | 5.5s |
+| pallets/click | 0 | 0 | 0 | 0 | 1698 | 680 | 3.6s |
 
-The contrast is the useful result, and it is the number to quote. A tool that merely
-suppressed findings would cut both equally. This one filters two thirds of a well-audited
-library's findings and confirms most of an intentionally vulnerable app's — it discriminates
-rather than just deletes.
+The spread is the useful result. Something that merely suppressed findings would cut every
+repo equally. This filters `requests` down to zero reachable, confirms 12 of 15 on a
+deliberately vulnerable app, and finds a genuine `verify=False` on a live network call in
+httpie with a verified 5-hop path.
 
-Spot-checked paths from the PyGoat run are correct, including multi-hop
-(`mitre_lab_17_api -> command_out`) and both Django `urlpatterns` and Flask `@app.route`
-entry detection.
+**The audit found six defects, four of them false UNREACHABLE.** See VERIFICATION.md. Summary:
+
+1. Class-body registrations (`digest_method = staticmethod(_lazy_sha1)`) were invisible —
+   reported Flask's session-signing hash as dead code.
+2. `__main__` guard bodies fell through to UNKNOWN instead of REACHABLE.
+3. Re-exported *classes* in `__init__.py` marked nothing, understating library API surface.
+4. A library's public API was judged only against internal callers. `requests.auth`
+   genuinely has no in-repo caller — consumers are the caller. Now UNKNOWN, not UNREACHABLE.
+5. `auth` matched as a substring of `author`, flagging every project's byline as a secret.
+6. Bare `system` matched `platform.system()`, flagging 5 harmless OS checks as shell execution.
+
+Every one has a regression test. 33 tests pass.
 
 ## Next steps, in order
 
-1. **Hand-verify a sample of verdicts.** The runs above were spot-checked, not audited. Pick
-   ~20 findings across both repos and confirm each verdict by reading the code. The entire
-   claim rests on the verdicts being right, and no amount of passing tests substitutes for it.
+1. **Exercise the external scanners.** Semgrep/OSV/Gitleaks have never been run against live
+   output — every validated finding came from the built-in rules, because Semgrep has no
+   native Windows support. Run the pipeline on Linux (or in the Phase 6 Action) and confirm
+   the three parsers handle real scanner JSON. `_dep_verdict` is the least-tested path in
+   the codebase and no OSV verdict has ever been checked.
 2. Decide how test code should be treated. Right now pytest functions come back UNREACHABLE
    because pytest collects them dynamically. Arguably correct for triage — a vulnerability
    only reachable from tests is not production-exploitable — but it is currently an accident
@@ -228,8 +243,8 @@ entry detection.
 3. Run the Phase 6 workflow on a real pull request.
 4. Expand `tests/fixtures/sample_app/` with adversarial cases: decorator indirection, dynamic
    dispatch through `getattr`, deep call chains, dead-but-imported modules.
-5. Try a much larger repo (10k+ functions) and record the runtime. Nothing in the design is
-   superlinear, but this has not been measured.
+5. Try a much larger repo (10k+ functions), ideally Django or async-heavy where dynamic
+   dispatch is densest. Current largest sample is 1698 functions at 3.6s.
 
 ## Deliberately not doing
 

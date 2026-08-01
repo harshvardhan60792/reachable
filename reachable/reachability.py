@@ -57,6 +57,22 @@ def _bfs(graph: CallGraph) -> Tuple[Set[str], Dict[str, Optional[str]], Dict[str
     return reachable, parent, confidence
 
 
+def _is_public_api(fn, package_roots: List[str]) -> bool:
+    """A public symbol inside an installable package is callable by anyone importing it.
+
+    `requests.auth.HTTPDigestAuth` is documented public API, but nothing inside the requests
+    source ever constructs it -- consumers do. Judging it only against the repo's own entry
+    points reported its MD5 and SHA-1 digest code as dead. For a library, "no internal caller"
+    is not the same as "unreachable", so these resolve to UNKNOWN instead.
+    """
+    if not any(fn.file == r or fn.file.startswith(r + "/") for r in package_roots):
+        return False
+    for part in fn.qualname.split("."):
+        if part.startswith("_") and not (part.startswith("__") and part.endswith("__")):
+            return False
+    return True
+
+
 def _path(qual: str, parent: Dict[str, Optional[str]]) -> List[str]:
     out: List[str] = []
     seen: Set[str] = set()
@@ -128,6 +144,7 @@ def _dep_verdict(
 def analyze(findings: List[Finding], graph: CallGraph, log=None) -> List[Verdict]:
     log = log or (lambda *_a, **_k: None)
     reachable, parent, confidence = _bfs(graph)
+    package_roots = graph.package_roots
     log("%d of %d functions reachable" % (len(reachable), len(graph.functions)))
 
     verdicts: List[Verdict] = []
@@ -148,6 +165,20 @@ def analyze(findings: List[Finding], graph: CallGraph, log=None) -> List[Verdict
 
         fn = graph.enclosing(finding.file, finding.line)
         if fn is None:
+            # Code sitting directly inside `if __name__ == "__main__":` is not merely
+            # imported -- it is what runs when someone executes the file. That is as
+            # reachable as anything gets, so it must not fall through to UNKNOWN.
+            if graph.in_main_block(finding.file, finding.line):
+                verdicts.append(
+                    Verdict(
+                        finding=finding,
+                        status=REACHABLE,
+                        sink="%s:__main__" % finding.file,
+                        confidence=EXACT,
+                        reason="inside the __main__ guard; executes when the file is run",
+                    )
+                )
+                continue
             verdicts.append(
                 Verdict(
                     finding=finding,
@@ -167,6 +198,17 @@ def analyze(findings: List[Finding], graph: CallGraph, log=None) -> List[Verdict
                     path=_path(fn.qualname, parent),
                     confidence=confidence.get(fn.qualname, EXACT),
                     reason="entry point: %s" % (_entry_reason(graph, parent, fn.qualname)),
+                )
+            )
+        elif _is_public_api(fn, package_roots):
+            verdicts.append(
+                Verdict(
+                    finding=finding,
+                    status=UNKNOWN,
+                    sink=fn.qualname,
+                    confidence=NAME,
+                    reason="public symbol of an importable package; no caller inside this "
+                           "repo, but a consumer of the library can call it directly",
                 )
             )
         else:

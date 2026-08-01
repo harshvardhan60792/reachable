@@ -27,16 +27,30 @@ thousands per year. This does it with the standard library.
 
 ## Does it actually work
 
-Run against two repositories at opposite ends of the quality range:
+Five real repositories. **Every verdict was hand-checked against the source** — see
+[VERIFICATION.md](VERIFICATION.md).
 
-| Repo | Functions | Reachable | Findings | Reachable findings |
+| Repo | Findings | REACHABLE | UNREACHABLE | UNKNOWN |
 |---|---|---|---|---|
-| pallets/flask | 1428 | 815 | 6 | **2** |
-| adeyosemanputra/pygoat *(deliberately vulnerable)* | 180 | 168 | 18 | **13** |
+| pallets/flask | 6 | 3 | 3 | 0 |
+| adeyosemanputra/pygoat *(deliberately vulnerable)* | 15 | **12** | 0 | 3 |
+| psf/requests | 17 | **0** | 13 | 4 |
+| httpie/cli | 4 | 2 | 0 | 2 |
+| pallets/click | 0 | 0 | 0 | 0 |
 
-The contrast is the point. Something that just suppressed findings would cut both equally.
-This filters two thirds of a well-audited library's results and confirms most of a vulnerable
-app's.
+The spread is the point. Something that just suppressed findings would cut every repo equally.
+
+The httpie result is a genuine one: `requests.get(PACKAGE_INDEX_LINK, verify=False)` — TLS
+verification disabled on a live network call — reached by a verified five-hop path:
+
+```
+httpie.core.main -> core.program -> client.collect_messages
+  -> client.build_requests_session -> ssl_.HTTPieHTTPSAdapter.get_default_ciphers_names
+```
+
+The audit also found six defects in this tool, four of them false UNREACHABLE. All fixed, all
+with regression tests. They are written up honestly in VERIFICATION.md rather than quietly
+patched — the failure modes are the most useful thing to know about a tool like this.
 
 ## Install
 

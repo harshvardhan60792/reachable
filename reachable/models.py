@@ -79,6 +79,11 @@ class CallGraph:
     imports: Dict[str, Dict[str, str]] = field(default_factory=dict)  # module -> {local: target}
     decorators: Dict[str, List[str]] = field(default_factory=dict)    # qualname -> decorator srcs
     classes: Dict[str, List[str]] = field(default_factory=dict)       # class qualname -> methods
+    main_blocks: Dict[str, List[Any]] = field(default_factory=dict)   # file -> [(start, end)]
+    package_roots: List[str] = field(default_factory=list)  # dirs of distributed packages
+
+    def in_main_block(self, file: str, line: int) -> bool:
+        return any(a <= line <= b for a, b in self.main_blocks.get(file, []))
 
     def adjacency(self) -> Dict[str, List[Edge]]:
         """caller qualname -> outgoing edges."""

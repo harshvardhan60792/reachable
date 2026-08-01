@@ -45,6 +45,14 @@ MAGIC_NAMES = {
 
 SCRIPT_RE = re.compile(r"['\"]?\s*=\s*['\"]?([\w\.]+)\s*:\s*([\w\.]+)")
 
+# Top-level directories that carry an __init__.py but are never shipped to consumers.
+# `requests/tests/` is an importable package, yet nothing outside the repo imports it, so
+# counting it as public API turned every dead test fixture into UNKNOWN.
+NON_DISTRIBUTED = {
+    "tests", "test", "testing", "docs", "doc", "examples", "example",
+    "benchmarks", "bench", "scripts", "tools", "ci", "build", "dist",
+}
+
 
 def _mark(fn: Optional[FuncDef], reason: str) -> None:
     if fn is not None and not fn.is_entry:
@@ -87,6 +95,14 @@ def _from_main_blocks(graph: CallGraph) -> None:
         for node in getattr(tree, "body", []):
             if not _is_main_guard(node):
                 continue
+
+            # Record the span so findings sitting directly inside the guard can be resolved
+            # as reachable rather than falling through to the module-level UNKNOWN rule.
+            rel = graph.modules.get(module, "")
+            if rel:
+                end = getattr(node, "end_lineno", node.lineno) or node.lineno
+                graph.main_blocks.setdefault(rel, []).append((node.lineno, end))
+
             imports = graph.imports.get(module, {})
             for call in ast.walk(node):
                 if not isinstance(call, ast.Call):
@@ -175,19 +191,36 @@ def _from_public_api(graph: CallGraph) -> None:
         imports = graph.imports.get(module, {})
 
         for node in getattr(tree, "body", []):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name.startswith("_"):
                     continue
                 if exported is not None and node.name not in exported:
                     continue
-                _mark(graph.functions.get("%s.%s" % (module, node.name)), "public API of %s" % module)
+                _mark_api(graph, "%s.%s" % (module, node.name), "public API of %s" % module)
 
         for local, target in imports.items():
             if local.startswith("_"):
                 continue
             if exported is not None and local not in exported:
                 continue
-            _mark(graph.functions.get(target), "re-exported from %s" % module)
+            _mark_api(graph, target, "re-exported from %s" % module)
+
+
+def _mark_api(graph: CallGraph, qual: str, reason: str) -> None:
+    """A public name may be a function or a class. Classes were being dropped.
+
+    `requests/__init__.py` re-exports `Session`, `Response` and `PreparedRequest` -- classes,
+    not functions -- so looking only in `graph.functions` marked nothing and left most of the
+    library's real surface looking dead.
+    """
+    fn = graph.functions.get(qual)
+    if fn is not None:
+        _mark(fn, reason)
+        return
+    for method in graph.classes.get(qual, []):
+        if method.rsplit(".", 1)[-1].startswith("_") and not method.endswith(".__init__"):
+            continue
+        _mark(graph.functions.get(method), reason)
 
 
 def _dunder_all(tree: ast.AST) -> Optional[List[str]]:
@@ -208,20 +241,21 @@ def _dunder_all(tree: ast.AST) -> Optional[List[str]]:
 # ------------------------------------------------------------------ magic names
 
 def _from_module_level_refs(graph: CallGraph) -> None:
-    """Functions named in a module-level table are invoked through that table.
+    """Functions named in a module- or class-level table are invoked through that table.
 
     `SCANNERS = (("semgrep", run_semgrep), ...)` and every plugin registry, URL map, handler
     dict and callback list share this shape: the reference lives at module scope, so no
-    enclosing function owns it and the call-site rule never fires. Without this, whole
-    subsystems come back dead.
+    enclosing function owns it and the call-site rule never fires.
+
+    Class bodies count too, and missing them caused a real false UNREACHABLE. Flask signs
+    every session cookie with `_lazy_sha1`, wired up as `digest_method = staticmethod(
+    _lazy_sha1)` in a class body. Skipping ClassDef reported that live crypto path as dead.
+    The same shape covers Django's `form_class`, DRF's `serializer_class`, and most
+    configure-by-class-attribute frameworks.
     """
     for module, tree in graph.trees.items():
         imports = graph.imports.get(module, {})
-        for node in getattr(tree, "body", []):
-            # Definitions and imports are declarations, not registrations.
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
-                                 ast.Import, ast.ImportFrom)):
-                continue
+        for node in _registration_stmts(getattr(tree, "body", [])):
             for ref in ast.walk(node):
                 fn = None
                 if isinstance(ref, ast.Name) and isinstance(ref.ctx, ast.Load):
@@ -232,7 +266,25 @@ def _from_module_level_refs(graph: CallGraph) -> None:
                     target = imports.get(ref.value.id)
                     if target:
                         fn = graph.functions.get("%s.%s" % (target, ref.attr))
-                _mark(fn, "referenced in a module-level table in %s" % module)
+                _mark(fn, "referenced in a module- or class-level table in %s" % module)
+
+
+def _registration_stmts(body):
+    """Statements that can register a callable, at module scope or inside a class body.
+
+    Descends through ClassDef but never into a function: a reference inside a function body
+    already has an enclosing caller, and the call-graph rules own it.
+    """
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if isinstance(node, ast.ClassDef):
+            for inner in _registration_stmts(node.body):
+                yield inner
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        yield node
 
 
 def _from_magic_names(graph: CallGraph) -> None:
@@ -242,8 +294,35 @@ def _from_magic_names(graph: CallGraph) -> None:
             _mark(fn, "conventional entry point name '%s'" % short)
 
 
+def _find_package_roots(repo: str, graph: CallGraph) -> None:
+    """Locate packages this repo actually ships, if any.
+
+    Only a *distributed* package has an outside caller. Any directory with an `__init__.py`
+    would be far too broad -- an application's internal packages are not an API, and treating
+    them as one turns real dead code into UNKNOWN and destroys the filtering this tool exists
+    for. So packaging metadata is required, and only top-level packages (at the repo root or
+    under `src/`) count.
+    """
+    if not any(os.path.isfile(os.path.join(repo, n))
+               for n in ("pyproject.toml", "setup.py", "setup.cfg")):
+        return
+
+    roots = []
+    for rel in graph.modules.values():
+        if rel.rsplit("/", 1)[-1] != "__init__.py":
+            continue
+        directory = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        if not directory:
+            continue
+        parent, _, name = directory.rpartition("/")
+        if parent in ("", "src") and name.lower() not in NON_DISTRIBUTED:
+            roots.append(directory)
+    graph.package_roots = sorted(set(roots))
+
+
 def detect(repo: str, graph: CallGraph, log=None) -> None:
     log = log or (lambda *_a, **_k: None)
+    _find_package_roots(repo, graph)
     _from_decorators(graph)
     _from_main_blocks(graph)
     _from_urlpatterns(graph)

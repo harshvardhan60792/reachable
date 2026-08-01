@@ -82,6 +82,40 @@ def test_short_secret_is_quiet(tmp_path):
     assert "builtin.hardcoded-secret" not in rules(got)
 
 
+def test_author_is_not_a_secret(tmp_path):
+    """Regression: `auth` was matched as a substring, so every `__author__` and every Sphinx
+    `author = "..."` in docs/conf.py was reported as a leaked credential."""
+    for src in ('__author__ = "Kenneth Reitz"\n',
+                'author = u"Kenneth Reitz and contributors"\n',
+                '__author_email__ = "me@kennethreitz.org"\n',
+                'authorization_docs_url = "https://example.com/docs"\n'):
+        got = scan_src(tmp_path, src)
+        assert "builtin.hardcoded-secret" not in rules(got), src
+
+
+def test_camelcase_and_underscore_secrets_still_fire(tmp_path):
+    for src in ('apiKey = "sk_live_9f3ba21c7d5e4088"\n',
+                'API_KEY = "sk_live_9f3ba21c7d5e4088"\n',
+                'AUTH_TOKEN = "ghp_9f3ba21c7d5e40881234"\n',
+                'client_secret = "9f3ba21c7d5e4088abcd"\n'):
+        got = scan_src(tmp_path, src)
+        assert "builtin.hardcoded-secret" in rules(got), src
+
+
+def test_platform_system_is_not_os_system(tmp_path):
+    """Regression: `platform.system()` reports the OS name and is harmless. Matching the bare
+    short name flagged it in both requests and httpie."""
+    got = scan_src(tmp_path, "import platform\ndef f():\n    return platform.system()\n")
+    assert "builtin.os-system" not in rules(got)
+
+
+def test_os_system_still_fires_both_import_styles(tmp_path):
+    got = scan_src(tmp_path, "import os\ndef f(c):\n    os.system(c)\n")
+    assert "builtin.os-system" in rules(got)
+    got = scan_src(tmp_path, "from os import system\ndef f(c):\n    system(c)\n", name="b.py")
+    assert "builtin.os-system" in rules(got)
+
+
 def test_non_secret_name_is_quiet(tmp_path):
     got = scan_src(tmp_path, "greeting = 'hello there friend'\n")
     assert "builtin.hardcoded-secret" not in rules(got)

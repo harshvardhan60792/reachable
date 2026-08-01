@@ -123,6 +123,42 @@ def test_module_level_finding_is_unknown_not_reachable(graph):
     assert verdict.status == UNKNOWN
 
 
+def test_class_body_reference_is_an_entry_point(graph):
+    """Regression: Flask wires its session hash as `digest_method = staticmethod(_lazy_sha1)`
+    in a class body. Skipping ClassDef reported that live crypto path as dead code."""
+    assert graph.functions["app.registry.sign_payload"].is_entry
+
+
+def test_class_body_registered_finding_is_reachable(graph):
+    finding = Finding(
+        id="t8",
+        tool="semgrep",
+        severity="MEDIUM",
+        message="weak hash",
+        file="app/registry.py",
+        line=line_of("app/registry.py", "SINK-CLASS-REGISTERED") + 1,
+        rule_id="python.lang.security.insecure-hash",
+    )
+    assert reachability.analyze([finding], graph)[0].status == REACHABLE
+
+
+def test_finding_inside_main_guard_is_reachable(graph):
+    """Code under `if __name__ == "__main__":` is exactly what runs when the file is
+    executed. UNKNOWN would understate it."""
+    finding = Finding(
+        id="t9",
+        tool="semgrep",
+        severity="MEDIUM",
+        message="debug mode enabled",
+        file="app/registry.py",
+        line=line_of("app/registry.py", "SINK-MAIN-GUARD"),
+        rule_id="python.flask.debug-enabled",
+    )
+    verdict = reachability.analyze([finding], graph)[0]
+    assert verdict.status == REACHABLE
+    assert "__main__" in verdict.reason
+
+
 def test_non_python_file_is_unknown(graph):
     finding = Finding(
         id="t4", tool="gitleaks", severity="HIGH", message="secret",
