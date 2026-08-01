@@ -190,7 +190,7 @@ def scan(repo: str, log=None) -> List[Finding]:
     for path in iter_python_files(repo):
         rel = rel_path(path, repo)
         try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8-sig", errors="replace") as fh:
                 tree = ast.parse(fh.read(), filename=rel)
         except (SyntaxError, ValueError, OSError):
             continue

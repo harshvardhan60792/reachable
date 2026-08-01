@@ -54,8 +54,15 @@ def _norm_path(path: str, repo: str) -> str:
 # --------------------------------------------------------------------------- semgrep
 
 def run_semgrep(repo: str) -> List[Finding]:
+    # --metrics=off matters: with `--config=auto` Semgrep uploads usage metrics by default.
+    # This tool promises local-only analysis, and silently phoning home about a codebase
+    # someone pointed a security scanner at would break that promise.
+    #
+    # `--config=auto` still fetches the rule registry over the network. That is a deliberate
+    # trade for rule coverage, and it is the only outbound request the pipeline makes.
     out = _run(
-        ["semgrep", "--config=auto", "--json", "--quiet", "--no-git-ignore", "."],
+        ["semgrep", "--config=auto", "--metrics=off", "--json", "--quiet",
+         "--no-git-ignore", "."],
         repo,
     )
     if not out:
@@ -233,6 +240,22 @@ def save_raw(findings: List[Finding], path: str) -> None:
         json.dump([f.to_dict() for f in findings], fh, indent=2)
 
 
+_FINDING_FIELDS = set(Finding.__dataclass_fields__)
+
+
 def load_raw(path: str) -> List[Finding]:
+    """Tolerate unknown keys rather than crashing.
+
+    A cached findings file can come from a different version of this tool, or be edited by
+    hand. `Finding(**d)` raises TypeError on any extra key, which turns a stale cache into a
+    hard failure with a confusing traceback.
+    """
     with open(path, encoding="utf-8") as fh:
-        return [Finding(**d) for d in json.load(fh)]
+        data = json.load(fh)
+    if not isinstance(data, list):
+        return []
+    out = []
+    for d in data:
+        if isinstance(d, dict):
+            out.append(Finding(**{k: v for k, v in d.items() if k in _FINDING_FIELDS}))
+    return out

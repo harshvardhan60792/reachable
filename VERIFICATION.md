@@ -179,6 +179,106 @@ superlinear and nothing here suggests otherwise.
 
 33 tests pass, including a regression test for every defect above.
 
+---
+
+# Part 2 — security review and hostile-input testing
+
+The threat model: this tool parses **source it does not trust** and **scanner JSON it does not
+control**, then writes a report that a GitHub Action posts as a pull request comment. That last
+step makes report content a security boundary, not a formatting concern.
+
+## Vulnerabilities found and fixed
+
+### S1. Report forgery through newline injection — the serious one
+
+`report.md` is posted verbatim as a PR comment. Nothing stripped newlines from finding text,
+and finding text is attacker-influenced: the built-in credential rule embeds an identifier
+lifted straight from the scanned source, and file paths come from scanner output.
+
+```python
+message = "harmless\n\n## REACHABLE (999)\n\n### `fake.py:1`\n\nfabricated critical finding"
+```
+
+That renders as real markdown headings. Anyone able to influence a scanned string could
+fabricate findings, or bury genuine ones under a forged all-clear — in the very report used to
+review their pull request.
+
+Fixed: all untrusted fields pass through `_clean()`, which strips control characters, collapses
+whitespace to a single line, and caps length at 500 characters. The text still appears, as
+inline prose — suppressing it would hide real content. Markdown structure needs a line start,
+and there are no longer any line starts to hijack.
+
+Tests: `test_markdown_report_cannot_be_forged_through_a_finding_message`,
+`test_forgery_through_file_path_and_rule_id`, `test_control_characters_are_stripped`,
+`test_absurdly_long_message_is_truncated`.
+
+### S2. BOM-prefixed files silently dropped from the graph
+
+Files were read as `utf-8`, so a byte-order mark survived as `﻿` and `ast.parse` raised
+`SyntaxError`. The file was recorded as a parse error and vanished from the call graph.
+
+This is a **security** bug, not a cosmetic one: a missing file means missing functions, which
+means findings inside it report as unreachable. Silent false negatives, and Windows editors
+emit BOMs routinely. Fixed by reading `utf-8-sig`. Test:
+`test_bom_prefixed_file_is_parsed`.
+
+### S3. `curl | sh` from a branch URL in the workflow
+
+The CI installed OSV-Scanner by piping a script fetched from a `main` branch URL — executing
+whatever that branch happened to contain, with write access to the workspace. Indefensible in
+the pipeline of a security tool. Replaced with pinned release binaries at fixed versions.
+
+### S4. Semgrep uploaded usage metrics by default
+
+`--config=auto` enables metrics reporting. This tool promises local-only analysis, so quietly
+phoning home about a codebase someone pointed a scanner at breaks that promise. Added
+`--metrics=off`. `--config=auto` still fetches the rule registry over the network; that is a
+deliberate trade for rule coverage and is now documented as the only outbound request.
+
+### S5. `pull_request` + fork PRs would fail the job
+
+Fork pull requests get a read-only token, so the comment step fails for exactly the PRs most
+worth scanning. Using `pull_request_target` would fix the token but hand write scope to
+untrusted PR code — the wrong trade. Kept `pull_request`, marked the comment step
+`continue-on-error`, and documented it. The report is still uploaded as an artifact.
+
+### S6. `load_raw` crashed on unexpected keys
+
+`Finding(**d)` raises `TypeError` on any extra key, so a findings file from a different version
+of the tool became a hard failure with a confusing traceback. Now filters to known fields.
+
+## Reviewed and found sound
+
+- **No XSS in `report.html`.** Every interpolated field goes through `html.escape`. Verified
+  by injecting `<script>` and `onerror=` payloads and confirming they render escaped.
+  (An earlier draft of the test reported a false positive by substring-matching text that was
+  already escaped — the payload string survives escaping, the markup does not.)
+- **No command injection.** Scanners are invoked with argument lists, never `shell=True`, and
+  no user-controlled string reaches a shell.
+- **Path traversal is inert.** A finding reporting `../../../etc/passwd` is only ever printed,
+  never opened. Files are read exclusively from the tool's own directory walk.
+- **Symlink loops cannot hang the walk.** `os.walk` does not follow symlinks by default.
+- **Malformed source degrades gracefully.** Null bytes, pathological nesting and undecodable
+  bytes skip the file and record a parse error; other files still process.
+- **Cycles terminate.** Circular imports and self-recursive calls are handled by the BFS
+  visited-set; verified explicitly.
+- **No dependencies to audit.** The core is standard library only, so there is no third-party
+  supply chain in the tool itself.
+- **Self-scan is clean.** Running the tool on its own source produces 3 findings, all in the
+  deliberately vulnerable test fixtures, all correctly classified. No findings in tool code.
+
+## Known residual risk
+
+- **Memory scales with repo size.** Every parsed AST is cached in `CallGraph.trees` so later
+  stages need not re-parse. Fine at the sizes tested (1698 functions), but a very large
+  monorepo could exhaust memory. Not a crash-safety issue, and no bound is currently enforced.
+- **Markdown code spans can still be unbalanced** by a backtick inside a cleaned field. It
+  breaks rendering cosmetically; it cannot forge structure.
+
+49 tests pass, including a regression test for every issue above.
+
+---
+
 ## What this audit did not cover
 
 - **External scanners were never exercised against live output.** Semgrep has no native

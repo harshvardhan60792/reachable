@@ -226,7 +226,31 @@ httpie with a verified 5-hop path.
 5. `auth` matched as a substring of `author`, flagging every project's byline as a secret.
 6. Bare `system` matched `platform.system()`, flagging 5 harmless OS checks as shell execution.
 
-Every one has a regression test. 33 tests pass.
+Every one has a regression test.
+
+## Security review
+
+Also in VERIFICATION.md, Part 2. The tool parses untrusted source and untrusted scanner JSON,
+and the Action posts its report as a PR comment — which makes report content a security
+boundary. Six issues found and fixed:
+
+1. **Report forgery via newline injection** (the serious one). Finding text is
+   attacker-influenced and was written into `report.md` unmodified, so a crafted string could
+   inject markdown headings and fabricate or bury findings in the report reviewing that same
+   PR. All untrusted fields now pass through `_clean()`.
+2. BOM-prefixed files raised `SyntaxError` and vanished from the graph — silent false
+   negatives, and common on Windows. Now read as `utf-8-sig`.
+3. Workflow installed OSV-Scanner via `curl | sh` from a branch URL. Now pinned releases.
+4. Semgrep `--config=auto` uploaded usage metrics. Now `--metrics=off`.
+5. Fork PRs get a read-only token, so the comment step would fail. Marked
+   `continue-on-error` rather than switching to the more dangerous `pull_request_target`.
+6. `load_raw` crashed on unexpected keys in a cached findings file.
+
+Reviewed and sound: HTML escaping, no shell invocation, path traversal inert, symlinks not
+followed, cycles terminate, no third-party dependencies. Self-scan is clean — the only
+findings are the deliberately vulnerable test fixtures.
+
+49 tests pass.
 
 ## Next steps, in order
 

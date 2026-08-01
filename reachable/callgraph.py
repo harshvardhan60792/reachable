@@ -350,7 +350,11 @@ def build(repo: str, log=None) -> CallGraph:
         mod = module_name(path, repo)
         rel = rel_path(path, repo)
         try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
+            # utf-8-sig, not utf-8: a leading BOM survives as ﻿ and makes ast.parse raise
+            # SyntaxError, so every BOM-prefixed file was silently dropped from the graph.
+            # Windows editors write them routinely, and a missing file means missing functions,
+            # which means findings inside it wrongly report as unreachable.
+            with open(path, encoding="utf-8-sig", errors="replace") as fh:
                 tree = ast.parse(fh.read(), filename=rel)
         except (SyntaxError, ValueError, OSError) as exc:
             graph.parse_errors.append("%s: %s" % (rel, exc))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 from typing import Dict, List
 
 from .models import CallGraph, EXACT, REACHABLE, UNKNOWN, UNREACHABLE, Verdict
@@ -35,8 +36,33 @@ def _counts(verdicts: List[Verdict]) -> Dict[str, int]:
     return counts
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+MAX_FIELD = 500
+
+
+def _clean(value, limit: int = MAX_FIELD) -> str:
+    """Flatten untrusted text to a single line before it reaches a report.
+
+    Every field here originates outside the tool: scanner messages, rule IDs, file paths, and
+    -- for the built-in credential rule -- an identifier lifted straight out of the scanned
+    source. A message containing newlines could inject whole sections into report.md:
+
+        message = "harmless\\n\\n## REACHABLE (999)\\n\\n### `fake.py:1`\\n\\ncritical"
+
+    The GitHub Action posts report.md as a pull request comment, so anyone who can put a
+    string in a PR could forge the security report that reviews that same PR -- fabricating
+    findings or burying real ones under a fake all-clear. Collapsing whitespace removes the
+    line starts that markdown structure depends on.
+    """
+    text = _CONTROL.sub("", str(value or ""))
+    text = " ".join(text.split())
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return text
+
+
 def _fmt_path(path: List[str]) -> str:
-    return " -> ".join(path) if path else ""
+    return " -> ".join(_clean(p, 200) for p in path) if path else ""
 
 
 # ----------------------------------------------------------------------------- json
@@ -101,20 +127,21 @@ def write_markdown(
         add("")
         for v in sorted(group, key=_sort_key):
             f = v.finding
-            loc = "%s:%d" % (f.file, f.line) if f.line else (f.package or f.file)
+            loc = "%s:%d" % (_clean(f.file, 200), f.line) if f.line else _clean(f.package or f.file, 200)
             add("### `%s`" % loc)
             add("")
-            add("%s" % (f.message or f.rule_id))
+            add("%s" % _clean(f.message or f.rule_id))
             add("")
-            add("- tool: `%s`  severity: `%s`  rule: `%s`" % (f.tool, f.severity, f.rule_id))
+            add("- tool: `%s`  severity: `%s`  rule: `%s`"
+                % (_clean(f.tool, 40), _clean(f.severity, 40), _clean(f.rule_id, 200)))
             if v.path:
                 add("- path: `%s`" % _fmt_path(v.path))
             if v.confidence != EXACT:
-                add("- confidence: `%s` — resolved by name match, may be over-approximate" % v.confidence)
+                add("- confidence: `%s` — resolved by name match, may be over-approximate" % _clean(v.confidence, 20))
             if v.reason:
-                add("- %s" % v.reason)
+                add("- %s" % _clean(v.reason))
             if f.fixed_version:
-                add("- fixed in: `%s`" % f.fixed_version)
+                add("- fixed in: `%s`" % _clean(f.fixed_version, 60))
             add("")
 
     if not include_unknown and counts[UNKNOWN]:
@@ -215,23 +242,24 @@ def write_html(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
         add("<h2>%s &middot; %d</h2>" % (status.lower(), len(group)))
         for v in sorted(group, key=_sort_key):
             f = v.finding
-            loc = "%s:%d" % (f.file, f.line) if f.line else (f.package or f.file)
+            loc = "%s:%d" % (_clean(f.file, 200), f.line) if f.line else _clean(f.package or f.file, 200)
             add("<div class='f %s'>" % status)
             add("<div class=loc>%s</div>" % _esc(loc))
-            add("<div class=msg>%s</div>" % _esc(f.message or f.rule_id))
+            add("<div class=msg>%s</div>" % _esc(_clean(f.message or f.rule_id)))
             add(
                 "<div class=meta><span>%s</span><span>%s</span><span>%s</span></div>"
-                % (_esc(f.tool), _esc(f.severity), _esc(f.rule_id))
+                % (_esc(_clean(f.tool, 40)), _esc(_clean(f.severity, 40)), _esc(_clean(f.rule_id, 200)))
             )
             if v.path:
                 add("<div class=path>%s</div>" % _esc(_fmt_path(v.path)))
             notes = []
             if v.confidence != EXACT:
-                notes.append("confidence: %s — resolved by name match, may over-approximate" % v.confidence)
+                notes.append("confidence: %s — resolved by name match, may over-approximate"
+                             % _clean(v.confidence, 20))
             if v.reason:
-                notes.append(v.reason)
+                notes.append(_clean(v.reason))
             if f.fixed_version:
-                notes.append("fixed in %s" % f.fixed_version)
+                notes.append("fixed in %s" % _clean(f.fixed_version, 60))
             if notes:
                 add("<div class=note>%s</div>" % _esc(" · ".join(notes)))
             add("</div>")
