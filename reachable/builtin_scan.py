@@ -1,0 +1,183 @@
+"""A small built-in Python security scanner, used when Semgrep is not available.
+
+This is deliberately *not* trying to replace Semgrep. It covers a short list of high-signal,
+low-false-positive patterns so the tool produces meaningful output on a machine with nothing
+installed — which matters more than it sounds. Semgrep has no native Windows support, and
+requiring three external binaries before anyone can see what the tool does is the kind of
+friction that stops people trying it at all.
+
+When Semgrep is installed it runs too, and both sets of findings flow through the same
+reachability analysis.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from typing import List, Optional
+
+from .callgraph import iter_python_files, rel_path
+from .models import Finding
+
+# name of assignment target -> looks like a credential
+SECRET_NAME = re.compile(
+    r"(password|passwd|pwd|secret|token|api_?key|access_?key|private_?key|auth)", re.I
+)
+# Obvious placeholders that are not real leaks. Docs, templates and test fixtures are full of
+# these, and flagging them trains people to ignore the tool -- which costs more than the one
+# real key it might catch.
+PLACEHOLDER = re.compile(
+    r"""^(
+        | x+ | \.{3} | -+ | \*+
+        | none | null | nil | true | false
+        | changeme | change_me | placeholder | redacted | insert[\w-]*
+        | example[\w-]* | dummy[\w-]* | fake[\w-]* | sample[\w-]*
+        | test[\w-]* | todo[\w-]* | foo[\w-]* | bar[\w-]*
+        | secret | password | token | api[-_]?key
+        | (your|my|our|the|some)[\w-]*
+        | <[^>]*>                 # <token>
+        | \{\{.*\}\}              # {{ jinja }}
+        | \{[^}]*\}               # {placeholder}
+        | \$\{[^}]*\}             # ${ENV_VAR}
+        | %\(.*\)s                # %(old_style)s
+        | \$[A-Z_]+               # $ENV_VAR
+    )$""",
+    re.I | re.X,
+)
+
+HIGH, MEDIUM, LOW = "HIGH", "MEDIUM", "LOW"
+
+
+class _Rules(ast.NodeVisitor):
+    def __init__(self, path: str):
+        self.path = path
+        self.out: List[Finding] = []
+
+    def _add(self, node: ast.AST, rule: str, severity: str, message: str) -> None:
+        self.out.append(
+            Finding(
+                id="",
+                tool="builtin",
+                severity=severity,
+                message=message,
+                file=self.path,
+                line=getattr(node, "lineno", 0),
+                end_line=getattr(node, "end_lineno", 0) or getattr(node, "lineno", 0),
+                rule_id="builtin.%s" % rule,
+            )
+        )
+
+    # -- calls ------------------------------------------------------------------
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = _src(node.func)
+        short = name.rsplit(".", 1)[-1]
+        kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+
+        if short in ("run", "call", "check_call", "check_output", "Popen"):
+            if _is_true(kwargs.get("shell")):
+                self._add(node, "subprocess-shell-true", HIGH,
+                          "subprocess called with shell=True; a tainted argument becomes "
+                          "command injection")
+
+        if name in ("os.system", "os.popen") or short == "system":
+            self._add(node, "os-system", HIGH,
+                      "os.system passes its argument to a shell")
+
+        if short in ("eval", "exec") and not _all_literal(node.args):
+            self._add(node, "eval-exec", HIGH,
+                      "%s() on a non-literal value executes arbitrary code" % short)
+
+        if short in ("loads", "load") and name.startswith("pickle"):
+            self._add(node, "pickle-load", HIGH,
+                      "pickle deserialization executes arbitrary code on untrusted input")
+
+        if short == "load" and "yaml" in name:
+            loader = kwargs.get("Loader")
+            if loader is None or "safe" not in _src(loader).lower():
+                self._add(node, "yaml-unsafe-load", HIGH,
+                          "yaml.load without SafeLoader can construct arbitrary objects")
+
+        if short in ("md5", "sha1"):
+            self._add(node, "weak-hash", MEDIUM,
+                      "%s is not collision resistant; unsuitable for signatures or "
+                      "password storage" % short)
+
+        if _is_false(kwargs.get("verify")):
+            self._add(node, "tls-verify-disabled", HIGH,
+                      "TLS certificate verification disabled")
+
+        if _is_true(kwargs.get("debug")) and short == "run":
+            self._add(node, "debug-enabled", MEDIUM,
+                      "debug mode exposes an interactive console if it reaches production")
+
+        if short == "mktemp":
+            self._add(node, "insecure-temp", MEDIUM,
+                      "tempfile.mktemp is race-prone; use mkstemp or NamedTemporaryFile")
+
+        if name.startswith("xml.etree") or short in ("fromstring", "parse"):
+            if "etree" in name or "ElementTree" in name:
+                self._add(node, "xml-parse", LOW,
+                          "stdlib XML parsing is vulnerable to entity expansion on "
+                          "untrusted input; consider defusedxml")
+
+        self.generic_visit(node)
+
+    # -- assignments ------------------------------------------------------------
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            name = _src(target)
+            if not SECRET_NAME.search(name):
+                continue
+            value = node.value
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                continue
+            if PLACEHOLDER.match(value.value.strip()) or len(value.value.strip()) < 8:
+                continue
+            self._add(node, "hardcoded-secret", HIGH,
+                      "credential-looking literal assigned to '%s'" % name)
+        self.generic_visit(node)
+
+
+def _src(node: Optional[ast.AST]) -> str:
+    if node is None:
+        return ""
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _is_true(node: Optional[ast.AST]) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _is_false(node: Optional[ast.AST]) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def _all_literal(args: List[ast.AST]) -> bool:
+    return all(isinstance(a, ast.Constant) for a in args)
+
+
+def scan(repo: str, log=None) -> List[Finding]:
+    log = log or (lambda *_a, **_k: None)
+    findings: List[Finding] = []
+
+    for path in iter_python_files(repo):
+        rel = rel_path(path, repo)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                tree = ast.parse(fh.read(), filename=rel)
+        except (SyntaxError, ValueError, OSError):
+            continue
+        rules = _Rules(rel)
+        rules.visit(tree)
+        findings.extend(rules.out)
+
+    for i, f in enumerate(findings):
+        f.id = "builtin-%d" % i
+
+    log("  builtin -> %d findings" % len(findings))
+    return findings
