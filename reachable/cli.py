@@ -57,7 +57,7 @@ def run(args) -> int:
         )
 
     verdicts = reachability.analyze(findings, graph, log)
-    paths = report.write(verdicts, graph, args.out, args.include_unknown)
+    paths = report.write(verdicts, graph, args.out, args.include_unknown, not args.brief)
 
     reachable = sum(1 for v in verdicts if v.status == REACHABLE)
     print("")
@@ -83,6 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-builtin", action="store_true", help="skip the built-in rules")
     scan.add_argument("--findings", help="reuse a cached raw scanner run")
     scan.add_argument("--include-unknown", action="store_true", help="show UNKNOWN in report.md")
+    scan.add_argument("--brief", action="store_true",
+                      help="drop the plain-English explanations from the reports")
     scan.add_argument("--fail-on-reachable", action="store_true", help="exit 1 if anything is reachable")
     scan.add_argument("--quiet", action="store_true", help="errors only")
     scan.set_defaults(func=run)

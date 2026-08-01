@@ -13,6 +13,7 @@ import os
 import re
 from typing import Dict, List
 
+from . import explain
 from .models import CallGraph, EXACT, REACHABLE, UNKNOWN, UNREACHABLE, Verdict
 
 ORDER = (REACHABLE, UNKNOWN, UNREACHABLE)
@@ -61,6 +62,40 @@ def _clean(value, limit: int = MAX_FIELD) -> str:
     return text
 
 
+def _add_plain_english(add, v: Verdict) -> None:
+    """The part someone can actually read, argue with, and repeat to another person."""
+    e = explain.for_finding(v.finding.rule_id, v.finding.message)
+
+    add("<details>")
+    add("<summary><b>Explain this in plain English</b></summary>")
+    add("")
+    add("**What the code is doing:** %s" % e.what)
+    add("")
+    add("**Why that is a problem:** %s" % e.why)
+    add("")
+
+    if v.path:
+        story = explain.path_in_words(v.path, v.reason)
+        if story:
+            add("**How something reaches it:** %s" % story)
+            add("")
+
+    add("**How to check this yourself:**")
+    add("")
+    for i, step in enumerate(e.check, 1):
+        add("%d. %s" % (i, step))
+    add("")
+
+    if e.fix:
+        add("**What a fix looks like:** %s" % e.fix)
+        add("")
+
+    add("**If someone asks you to explain it:** \"%s\"" % e.say)
+    add("")
+    add("</details>")
+    add("")
+
+
 def _fmt_path(path: List[str]) -> str:
     return " -> ".join(_clean(p, 200) for p in path) if path else ""
 
@@ -88,7 +123,11 @@ def write_json(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
 # ------------------------------------------------------------------------- markdown
 
 def write_markdown(
-    verdicts: List[Verdict], graph: CallGraph, path: str, include_unknown: bool = False
+    verdicts: List[Verdict],
+    graph: CallGraph,
+    path: str,
+    include_unknown: bool = False,
+    plain: bool = True,
 ) -> None:
     counts = _counts(verdicts)
     lines: List[str] = []
@@ -116,6 +155,23 @@ def write_markdown(
     )
     add("")
 
+    if plain:
+        add("---")
+        add("")
+        add("## How to read this")
+        add("")
+        add("Findings are grouped by whether anything can actually reach them.")
+        add("")
+        for status in ORDER:
+            headline, detail = explain.for_verdict(status)
+            add("- **%s** — %s %s" % (status, headline, detail))
+        add("")
+        add("Each finding below explains what the code does, why it matters, and **how to "
+            "check it yourself**. Do the checking. This tool points at code; you decide. Its "
+            "own audit found six bugs in itself, so \"the scanner said so\" is not a good "
+            "enough reason to open a pull request.")
+        add("")
+
     shown = [REACHABLE, UNREACHABLE] + ([UNKNOWN] if include_unknown else [])
     for status in ORDER:
         if status not in shown:
@@ -123,8 +179,14 @@ def write_markdown(
         group = [v for v in verdicts if v.status == status]
         if not group:
             continue
+        add("---")
+        add("")
+        headline, detail = explain.for_verdict(status)
         add("## %s (%d)" % (status, len(group)))
         add("")
+        if plain:
+            add("*%s %s*" % (headline, detail))
+            add("")
         for v in sorted(group, key=_sort_key):
             f = v.finding
             loc = "%s:%d" % (_clean(f.file, 200), f.line) if f.line else _clean(f.package or f.file, 200)
@@ -142,6 +204,18 @@ def write_markdown(
                 add("- %s" % _clean(v.reason))
             if f.fixed_version:
                 add("- fixed in: `%s`" % _clean(f.fixed_version, 60))
+            add("")
+
+            if plain:
+                _add_plain_english(add, v)
+
+    if plain and verdicts:
+        add("---")
+        add("")
+        add("## Words used above")
+        add("")
+        for term, meaning in sorted(explain.GLOSSARY.items()):
+            add("**%s** — %s" % (term, meaning))
             add("")
 
     if not include_unknown and counts[UNKNOWN]:
@@ -188,6 +262,16 @@ padding:.9rem 1rem;margin:0 0 .7rem}
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;
 overflow-x:auto;white-space:nowrap}
 .note{color:var(--muted);font-size:.79rem;margin-top:.5rem;font-style:italic}
+.verdicthelp{color:var(--muted);font-size:.85rem;margin:-.4rem 0 1rem;max-width:52rem}
+details.plain{margin-top:.7rem;border-top:1px solid var(--line);padding-top:.6rem}
+details.plain summary{cursor:pointer;font-size:.82rem;font-weight:600;color:var(--muted);
+user-select:none}
+details.plain summary:hover{color:var(--fg)}
+details.plain p{font-size:.87rem;margin:.7rem 0}
+details.plain ol{font-size:.87rem;margin:.4rem 0;padding-left:1.3rem}
+details.plain li{margin:.25rem 0}
+details.plain .say{background:var(--code);border-radius:6px;padding:.6rem .75rem;
+font-style:italic}
 code{background:var(--code);padding:.1rem .3rem;border-radius:4px;font-size:.85em}
 footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--line);
 color:var(--muted);font-size:.8rem}
@@ -198,7 +282,9 @@ def _esc(s: str) -> str:
     return html.escape(str(s or ""))
 
 
-def write_html(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
+def write_html(
+    verdicts: List[Verdict], graph: CallGraph, path: str, plain: bool = True
+) -> None:
     counts = _counts(verdicts)
     parts: List[str] = []
     add = parts.append
@@ -240,6 +326,9 @@ def write_html(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
         if not group:
             continue
         add("<h2>%s &middot; %d</h2>" % (status.lower(), len(group)))
+        if plain:
+            headline, detail = explain.for_verdict(status)
+            add("<p class=verdicthelp><b>%s</b> %s</p>" % (_esc(headline), _esc(detail)))
         for v in sorted(group, key=_sort_key):
             f = v.finding
             loc = "%s:%d" % (_clean(f.file, 200), f.line) if f.line else _clean(f.package or f.file, 200)
@@ -262,6 +351,28 @@ def write_html(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
                 notes.append("fixed in %s" % _clean(f.fixed_version, 60))
             if notes:
                 add("<div class=note>%s</div>" % _esc(" · ".join(notes)))
+
+            if plain:
+                e = explain.for_finding(f.rule_id, f.message)
+                add("<details class=plain>")
+                add("<summary>Explain this in plain English</summary>")
+                add("<p><b>What the code is doing:</b> %s</p>" % _esc(e.what))
+                add("<p><b>Why that is a problem:</b> %s</p>" % _esc(e.why))
+                if v.path:
+                    story = explain.path_in_words(v.path, v.reason)
+                    if story:
+                        add("<p><b>How something reaches it:</b> %s</p>"
+                            % _esc(story).replace("`", ""))
+                add("<p><b>How to check this yourself:</b></p><ol>")
+                for step in e.check:
+                    add("<li>%s</li>" % _esc(step))
+                add("</ol>")
+                if e.fix:
+                    add("<p><b>What a fix looks like:</b> %s</p>" % _esc(e.fix))
+                add("<p class=say><b>If someone asks you to explain it:</b> &ldquo;%s&rdquo;</p>"
+                    % _esc(e.say))
+                add("</details>")
+
             add("</div>")
 
     add(
@@ -279,6 +390,7 @@ def write(
     graph: CallGraph,
     out_dir: str,
     include_unknown: bool = False,
+    plain: bool = True,
 ) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     paths = {
@@ -287,6 +399,6 @@ def write(
         "html": os.path.join(out_dir, "report.html"),
     }
     write_json(verdicts, graph, paths["json"])
-    write_markdown(verdicts, graph, paths["md"], include_unknown)
-    write_html(verdicts, graph, paths["html"])
+    write_markdown(verdicts, graph, paths["md"], include_unknown, plain)
+    write_html(verdicts, graph, paths["html"], plain)
     return paths
