@@ -22,7 +22,7 @@ Last updated: 2026-08-04
 
 Phases 1-5 are the MVP. Shipping them alone is a complete, defensible tool.
 
-26 tests pass. Validated end to end against two real repositories — see **Validation** below.
+88 tests pass. Validated against a 22-repository corpus — see **Validation** below.
 
 ---
 
@@ -123,6 +123,9 @@ Marks which functions can actually be invoked from outside. Detects:
 - AWS Lambda `handler` / `lambda_handler`
 - Celery `@task` / `@shared_task`
 - Public functions re-exported from `__init__.py` (library surface)
+- Anything a framework names as a dotted **string** rather than calls in code — gunicorn's
+  `SUPPORTED_WORKERS`, Django `MIDDLEWARE`, Scrapy `ITEM_PIPELINES`, setuptools entry points.
+  Added after defect 9; exact matches only.
 
 Implemented in `reachable/entrypoints.py`.
 
