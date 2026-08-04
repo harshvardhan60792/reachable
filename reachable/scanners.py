@@ -255,7 +255,7 @@ def scan(
     """Run every available scanner. Missing binaries are skipped with a warning.
 
     Pass a list as ``failures`` to receive the scanners that died. The return type stays a
-    plain finding list so the stage contract in CLAUDE.md holds, but a caller that writes a
+    plain finding list so the stage contract in ARCHITECTURE.md holds, but a caller that writes a
     report needs to know the difference between "found nothing" and "never ran".
     """
     log = log or (lambda *_a, **_k: None)

@@ -27,30 +27,54 @@ thousands per year. This does it with the standard library.
 
 ## Does it actually work
 
-Five real repositories. **Every verdict was hand-checked against the source** — see
-[VERIFICATION.md](VERIFICATION.md).
+**22 real repositories, 1,415 findings, 455 reachable.** Semgrep live on every run, and a
+sample of verdicts hand-checked against the source — see [VERIFICATION.md](VERIFICATION.md).
 
-| Repo | Findings | REACHABLE | UNREACHABLE | UNKNOWN |
-|---|---|---|---|---|
-| pallets/flask | 6 | 3 | 3 | 0 |
-| adeyosemanputra/pygoat *(deliberately vulnerable)* | 15 | **12** | 0 | 3 |
-| psf/requests | 17 | **0** | 13 | 4 |
-| httpie/cli | 4 | 2 | 0 | 2 |
-| pallets/click | 0 | 0 | 0 | 0 |
+| Repo | Findings | REACHABLE | UNREACHABLE | UNKNOWN | Functions |
+|---|---|---|---|---|---|
+| django/django | 637 | 144 | 115 | 378 | 32,438 |
+| sqlmapproject/sqlmap | 133 | 92 | 28 | 13 | 7,695 |
+| celery/celery | 118 | **13** | 3 | 102 | 7,854 |
+| OWASP/pygoat *(deliberately vulnerable)* | 99 | **57** | 0 | 42 | 180 |
+| benoitc/gunicorn | 57 | 16 | 36 | 5 | 4,587 |
+| scrapy/scrapy | 57 | 32 | 16 | 9 | 5,558 |
+| aio-libs/aiohttp | 43 | 11 | 31 | 1 | 6,440 |
+| pypa/pip | 41 | 15 | 19 | 7 | 7,541 |
+| psf/black | 40 | 12 | 9 | 19 | 1,607 |
+| tornadoweb/tornado | 31 | 9 | 0 | 22 | 3,177 |
+| pallets/jinja | 30 | 15 | 5 | 10 | 1,568 |
+| mitmproxy/mitmproxy | 26 | 10 | 4 | 12 | 4,985 |
+| psf/requests | 25 | **0** | 12 | 13 | 691 |
+| locustio/locust | 17 | 4 | 2 | 11 | 2,031 |
+| fastapi/fastapi | 17 | 11 | 0 | 6 | 4,959 |
+| encode/httpx | 15 | **0** | 14 | 1 | 1,122 |
+| pallets/flask | 9 | 6 | 3 | 0 | 1,428 |
+| httpie/cli | 8 | 5 | 0 | 3 | 1,062 |
 
-The spread is the point. Something that just suppressed findings would cut every repo equally.
+The spread is the point. Something that merely suppressed findings would cut every repo
+equally. This clears `requests` and `httpx` to zero, keeps 57 of 99 on a deliberately
+vulnerable app, and leaves 92 standing on `sqlmap` — a tool that executes payloads for a
+living and *should* light up.
+
+Read the UNKNOWN column honestly: on `celery`, 102 of 118 findings resolve to UNKNOWN. That is
+not filtering, it is the tool declining to guess about dynamically dispatched tasks. A verdict
+it will not defend is reported as one it will not defend.
 
 The httpie result is a genuine one: `requests.get(PACKAGE_INDEX_LINK, verify=False)` — TLS
-verification disabled on a live network call — reached by a verified five-hop path:
+verification disabled on a live network call, in production code, reached only through a dict:
 
 ```
-httpie.core.main -> core.program -> client.collect_messages
-  -> client.build_requests_session -> ssl_.HTTPieHTTPSAdapter.get_default_ciphers_names
+DAEMONIZED_TASKS = {'fetch_updates': _fetch_updates}   # daemon_runner.py
+DAEMONIZED_TASKS[options.task_id](env)
 ```
+
+No caller names that function anywhere. Dynamic dispatch through a registry is exactly what a
+plain scanner cannot rank and what this tool exists to resolve.
 
 The audit also found nine defects in this tool, five of them false UNREACHABLE. All fixed, all
 with regression tests. They are written up honestly in VERIFICATION.md rather than quietly
-patched — the failure modes are the most useful thing to know about a tool like this.
+patched — the failure modes are the most useful thing to know about a tool like this. Two of
+the nine were found only by running it over unfamiliar code; the test suite passed throughout.
 
 ## Install
 
@@ -108,8 +132,10 @@ minutes, so it costs nothing.
 1. **Call graph** — every `.py` file is parsed with the stdlib `ast` module. Function
    definitions become nodes; call sites become edges.
 2. **Entry points** — functions reachable from outside the program are marked: `__main__`
-   blocks, Flask/FastAPI/Django routes, `console_scripts`, Lambda handlers, Celery tasks, and
-   the public surface of `__init__.py`.
+   blocks, Flask/FastAPI/Django routes, `console_scripts`, Lambda handlers, Celery tasks, the
+   public surface of `__init__.py`, and anything a framework names as a dotted string rather
+   than calls in code — gunicorn's `SUPPORTED_WORKERS`, Django `MIDDLEWARE`, Scrapy
+   `ITEM_PIPELINES`, setuptools entry points.
 3. **Traversal** — breadth-first search from every entry point produces the reachable set.
 4. **Verdict** — each finding is mapped to its enclosing function, and that function is looked
    up in the reachable set.

@@ -1,6 +1,7 @@
-# CLAUDE.md — AI handoff context
+# ARCHITECTURE.md
 
-Read this first. It contains everything needed to take over this project cold.
+Read this first. It contains everything needed to pick the project up cold: what it is, why it
+exists, how the stages fit together, and which limits are deliberate.
 
 ## What this is
 
@@ -154,20 +155,10 @@ real run." If you are tempted to tighten resolution for precision, re-read that 
 - Qualified names are dotted and rooted at the repo: `pkg.module.Class.method`.
 - No `print` in library code — `cli.py` owns all user-facing output.
 
-## Working agreement
+## Contributing
 
 - Update `PLAN.md` whenever a phase moves. It is the source of truth for status.
 - Do not add a dependency without a written reason in `PLAN.md`.
 - Do not commit scan output; `out/` is gitignored.
 - Only ever scan public repositories, or repositories the user owns. Never point this at a
   third party's private code or at a bug bounty target outside its published scope.
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

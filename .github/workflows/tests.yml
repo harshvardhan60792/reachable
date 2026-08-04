@@ -1,0 +1,44 @@
+name: tests
+
+# The suite is hermetic: no scanner binary is ever executed, so this needs nothing installed
+# beyond pytest. That is deliberate -- see tests/test_adversarial.py.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 3.9 is the floor the code claims; 3.13 is the ceiling it has to keep working on.
+        # Windows is not incidental -- two defects in VERIFICATION.md were Windows-only.
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: pip install pytest
+
+      - run: python -m pytest tests -q
+
+  self-scan:
+    # The tool runs on itself. Its only findings should be the deliberately vulnerable
+    # fixture app under tests/fixtures/, so anything else is a regression worth seeing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m reachable scan . --out ./out
+      - run: cat out/report.md

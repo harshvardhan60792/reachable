@@ -22,13 +22,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Every scanner below is optional. `reachable` skips whatever is missing and still
-      # runs its built-in rules, so a failure here degrades the report rather than the job.
+      # Every scanner below is optional. `reachable` skips whatever is missing and still runs
+      # its built-in rules, so a failure here degrades the report rather than the job -- and
+      # since a scanner that does not complete is now reported as INCOMPLETE rather than as
+      # zero findings, a silent install failure cannot be mistaken for a clean scan.
       #
-      # Versions are pinned and checksums verified. `curl | sh` against a branch URL would
-      # execute whatever that branch contains at the moment the job runs -- an unreviewed
-      # remote script with write access to the workspace. Not a risk worth taking anywhere,
-      # and indefensible in the CI of a security tool.
+      # Versions are pinned, and each download is checked against the checksums file published
+      # with that same release. Be precise about what that buys: it detects a corrupted or
+      # truncated transfer, not a compromised release -- the checksums come from the same
+      # origin as the binary. Pinning the version is what actually limits the blast radius.
+      #
+      # What it replaces matters more. `curl | sh` against a *branch* URL executes whatever
+      # that branch contains at the moment the job runs: an unreviewed remote script with
+      # write access to the workspace. Not worth it anywhere, indefensible in the CI of a
+      # security tool.
       - name: Install scanners
         continue-on-error: true
         env:
@@ -38,13 +45,19 @@ jobs:
           set -euo pipefail
           pip install "semgrep==1.95.0"
 
-          curl -sSfL -o osv-scanner \
-            "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"
+          osv_base="https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}"
+          curl -sSfL -o osv-scanner "${osv_base}/osv-scanner_linux_amd64"
+          curl -sSfL -o osv_checksums.txt "${osv_base}/osv-scanner_${OSV_VERSION}_checksums.txt"
+          grep " osv-scanner_linux_amd64\$" osv_checksums.txt \
+            | sed 's/osv-scanner_linux_amd64/osv-scanner/' | sha256sum -c -
           chmod +x osv-scanner && sudo mv osv-scanner /usr/local/bin/
 
-          curl -sSfL -o gitleaks.tar.gz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          tar -xzf gitleaks.tar.gz gitleaks
+          gl_base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          gl_tar="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "${gl_tar}" "${gl_base}/${gl_tar}"
+          curl -sSfL -o gl_checksums.txt "${gl_base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${gl_tar}\$" gl_checksums.txt | sha256sum -c -
+          tar -xzf "${gl_tar}" gitleaks
           sudo mv gitleaks /usr/local/bin/
 
       - name: Run reachability triage
