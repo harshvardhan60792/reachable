@@ -215,7 +215,8 @@ repo equally. This filters `requests` down to zero reachable, confirms 12 of 15 
 deliberately vulnerable app, and finds a genuine `verify=False` on a live network call in
 httpie with a verified 5-hop path.
 
-**The audit found six defects, four of them false UNREACHABLE.** See VERIFICATION.md. Summary:
+**The audit found six defects, four of them false UNREACHABLE.** A seventh turned up later,
+from pointing the tool at a sixth repository. See VERIFICATION.md. Summary:
 
 1. Class-body registrations (`digest_method = staticmethod(_lazy_sha1)`) were invisible —
    reported Flask's session-signing hash as dead code.
@@ -225,6 +226,10 @@ httpie with a verified 5-hop path.
    genuinely has no in-repo caller — consumers are the caller. Now UNKNOWN, not UNREACHABLE.
 5. `auth` matched as a substring of `author`, flagging every project's byline as a secret.
 6. Bare `system` matched `platform.system()`, flagging 5 harmless OS checks as shell execution.
+7. Bare `mktemp` matched pytest's `tmp_path_factory.mktemp()`, which creates the directory it
+   names and is safe. Found on `edgecheck`, reproduced on `cve-bin-tool`. The builtin scanner
+   now resolves a call's receiver through the file's own imports before matching a stdlib name,
+   which also picked up `import os as o; o.system(c)` and `import pickle as p; p.loads(b)`.
 
 Every one has a regression test.
 
@@ -250,7 +255,7 @@ Reviewed and sound: HTML escaping, no shell invocation, path traversal inert, sy
 followed, cycles terminate, no third-party dependencies. Self-scan is clean — the only
 findings are the deliberately vulnerable test fixtures.
 
-49 tests pass.
+71 tests pass.
 
 ## Next steps, in order
 

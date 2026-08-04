@@ -4,11 +4,12 @@ PLAN.md listed this as next step #1: the entire claim rests on the verdicts bein
 passing tests do not substitute for reading the code.
 
 Every verdict below was checked by opening the file at the reported line and tracing the
-claimed path by hand. **Six defects were found and fixed.** Four of them were false
+claimed path by hand. **Seven defects were found and fixed.** Four of them were false
 `UNREACHABLE` — the one error class this tool must never make, because it tells someone to
 ignore live code.
 
-Audited: 5 repositories, 42 findings, every verdict.
+Audited: 5 repositories, 42 findings, every verdict. Defect 7 came later, from pointing the
+tool at a sixth repository.
 
 ---
 
@@ -112,6 +113,31 @@ if platform.system() == 'Windows':    # flagged as os.system shell execution
 prefix, or an undotted call (`from os import system`). Verified by grep that no genuine
 `os.system(...)` call was lost in the process. Regression test:
 `test_platform_system_is_not_os_system`.
+
+### 7. Bare `mktemp` matched `tmp_path_factory.mktemp()` → false-positive insecure temp file
+
+**Found on:** `edgecheck/benchmarks/`, and independently on `cve-bin-tool/test/test_mismatch_cli.py:16`.
+
+```python
+db_file = tmpdir_factory.mktemp("data").join("test_mismatch.db")   # flagged as tempfile.mktemp
+```
+
+pytest's `tmp_path_factory.mktemp` / `tmpdir_factory.mktemp` **creates** the directory it
+names, which is the entire difference from `tempfile.mktemp` — no window, no race. Same shape
+as defect 6: the rule matched the method name and never asked what the receiver was.
+
+Fix: the scanner now reads each file's imports into an alias table and resolves a call's
+dotted source through it before matching, so `mktemp` fires only when the receiver resolves to
+`tempfile`. `import tempfile as tf`, `from tempfile import mktemp as mk`, and an import placed
+below the function that uses it all still fire — the pass over imports runs before the pass
+over calls, because a function body executes later than the module text. The same resolution
+now also catches `import os as o; o.system(c)` and `import pickle as p; p.loads(b)`, which the
+bare-name rules missed. Regression tests: `test_pytest_mktemp_is_not_tempfile_mktemp`,
+`test_real_mktemp_fires_through_every_import_style`, `test_an_import_below_its_use_still_resolves`.
+
+Worth noting what did **not** go wrong: the verdict on the bad finding was `UNREACHABLE`,
+which was correct — the triage layer did its job on top of a wrong rule. The false positive
+was in the scanner, and it is exactly the noise the reachability layer exists to absorb.
 
 ---
 

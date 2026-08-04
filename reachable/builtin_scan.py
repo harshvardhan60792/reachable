@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ast
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .callgraph import iter_python_files, rel_path
 from .models import Finding
@@ -59,6 +59,59 @@ class _Rules(ast.NodeVisitor):
     def __init__(self, path: str):
         self.path = path
         self.out: List[Finding] = []
+        # `alias -> module` from `import x` / `import x as y`, and `local name -> module.attr`
+        # from `from x import y`. A rule that names a stdlib function has to know whether the
+        # thing before the dot is that module or some unrelated object that happens to expose
+        # a method with the same name.
+        self.modules: Dict[str, str] = {}
+        self.imported: Dict[str, str] = {}
+
+    # -- imports ----------------------------------------------------------------
+
+    def run(self, tree: ast.AST) -> None:
+        """Collect imports across the whole file, then apply the rules.
+
+        Two passes, because a function body executes later than the module text: a function
+        defined above a module-level `import tempfile` still calls the imported module.
+        """
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                self.visit_Import(node)
+            elif isinstance(node, ast.ImportFrom):
+                self.visit_ImportFrom(node)
+        self.visit(tree)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.asname:
+                self.modules[alias.asname] = alias.name
+            else:
+                # `import xml.etree.ElementTree` binds `xml`, and calls through it stay dotted.
+                head = alias.name.split(".", 1)[0]
+                self.modules[head] = head
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        # Relative imports name a module in the repo under scan, not a stdlib one.
+        if node.module and not node.level:
+            for alias in node.names:
+                self.imported[alias.asname or alias.name] = "%s.%s" % (node.module, alias.name)
+        self.generic_visit(node)
+
+    def _resolve(self, name: str) -> str:
+        """Rewrite a call's dotted source through this file's imports.
+
+        `tf.mktemp` becomes `tempfile.mktemp` under `import tempfile as tf`, and a bare
+        `mktemp` becomes `tempfile.mktemp` under `from tempfile import mktemp`. A receiver
+        that is not an imported module -- `tmp_path_factory.mktemp` -- is left alone, which
+        is the whole point: it is not tempfile's.
+        """
+        head, dot, rest = name.partition(".")
+        if not dot:
+            return self.imported.get(head, head)
+        if head in self.modules:
+            return "%s.%s" % (self.modules[head], rest)
+        return name
 
     def _add(self, node: ast.AST, rule: str, severity: str, message: str) -> None:
         self.out.append(
@@ -78,6 +131,7 @@ class _Rules(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _src(node.func)
+        full = self._resolve(name)
         short = name.rsplit(".", 1)[-1]
         kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
 
@@ -90,7 +144,7 @@ class _Rules(ast.NodeVisitor):
         # `platform.system()` returns the OS name and is completely harmless. Matching the
         # bare short name flagged it in both requests and httpie, so the module must match:
         # either an explicit `os.` prefix, or an undotted call from `from os import system`.
-        if name in ("os.system", "os.popen") or (short in ("system", "popen") and "." not in name):
+        if full in ("os.system", "os.popen") or (short in ("system", "popen") and "." not in name):
             self._add(node, "os-system", HIGH,
                       "os.system passes its argument to a shell")
 
@@ -98,11 +152,11 @@ class _Rules(ast.NodeVisitor):
             self._add(node, "eval-exec", HIGH,
                       "%s() on a non-literal value executes arbitrary code" % short)
 
-        if short in ("loads", "load") and name.startswith("pickle"):
+        if short in ("loads", "load") and full.startswith("pickle"):
             self._add(node, "pickle-load", HIGH,
                       "pickle deserialization executes arbitrary code on untrusted input")
 
-        if short == "load" and "yaml" in name:
+        if short == "load" and "yaml" in full:
             loader = kwargs.get("Loader")
             if loader is None or "safe" not in _src(loader).lower():
                 self._add(node, "yaml-unsafe-load", HIGH,
@@ -121,7 +175,10 @@ class _Rules(ast.NodeVisitor):
             self._add(node, "debug-enabled", MEDIUM,
                       "debug mode exposes an interactive console if it reaches production")
 
-        if short == "mktemp":
+        # `tmp_path_factory.mktemp()` is pytest's, creates the directory itself, and is safe.
+        # The bare short name flagged it in edgecheck, so the receiver has to resolve to
+        # tempfile before this fires.
+        if full == "tempfile.mktemp":
             self._add(node, "insecure-temp", MEDIUM,
                       "tempfile.mktemp is race-prone; use mkstemp or NamedTemporaryFile")
 
@@ -195,7 +252,7 @@ def scan(repo: str, log=None) -> List[Finding]:
         except (SyntaxError, ValueError, OSError):
             continue
         rules = _Rules(rel)
-        rules.visit(tree)
+        rules.run(tree)
         findings.extend(rules.out)
 
     for i, f in enumerate(findings):

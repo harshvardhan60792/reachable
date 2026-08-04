@@ -116,6 +116,64 @@ def test_os_system_still_fires_both_import_styles(tmp_path):
     assert "builtin.os-system" in rules(got)
 
 
+def test_pytest_mktemp_is_not_tempfile_mktemp(tmp_path):
+    """Regression: `tmp_path_factory.mktemp()` is pytest's, creates the directory itself, and
+    is safe. Found by running this tool over edgecheck -- the rule matched the bare method name
+    without ever asking what the receiver was."""
+    got = scan_src(tmp_path, "def f(tmp_path_factory):\n    return tmp_path_factory.mktemp('x')\n")
+    assert "builtin.insecure-temp" not in rules(got)
+
+
+def test_a_method_named_mktemp_on_any_object_is_quiet(tmp_path):
+    got = scan_src(tmp_path, "def f(store):\n    return store.mktemp()\n")
+    assert "builtin.insecure-temp" not in rules(got)
+
+
+def test_real_mktemp_fires_through_every_import_style(tmp_path):
+    """The other direction: tightening the rule must not silence the thing it exists for."""
+    for i, src in enumerate((
+        "import tempfile\ndef f():\n    return tempfile.mktemp()\n",
+        "import tempfile as tf\ndef f():\n    return tf.mktemp()\n",
+        "from tempfile import mktemp\ndef f():\n    return mktemp()\n",
+        "from tempfile import mktemp as mk\ndef f():\n    return mk()\n",
+    )):
+        got = scan_src(tmp_path, src, name="t%d.py" % i)
+        assert "builtin.insecure-temp" in rules(got), src
+
+
+def test_an_import_below_its_use_still_resolves(tmp_path):
+    """A function body runs after the module text, so the import can sit below it."""
+    got = scan_src(tmp_path, "def f():\n    return tempfile.mktemp()\nimport tempfile\n")
+    assert "builtin.insecure-temp" in rules(got)
+
+
+def test_mkstemp_is_quiet(tmp_path):
+    """One letter apart, and the safe one."""
+    got = scan_src(tmp_path, "import tempfile\ndef f():\n    return tempfile.mkstemp()\n")
+    assert "builtin.insecure-temp" not in rules(got)
+
+
+def test_os_system_resolves_through_an_alias(tmp_path):
+    """Same receiver blindness in the other direction: `import os as o` used to miss."""
+    got = scan_src(tmp_path, "import os as o\ndef f(c):\n    o.system(c)\n")
+    assert "builtin.os-system" in rules(got)
+
+
+def test_an_unrelated_object_with_a_system_method_is_quiet(tmp_path):
+    got = scan_src(tmp_path, "def f(vm, c):\n    return vm.system(c)\n")
+    assert "builtin.os-system" not in rules(got)
+
+
+def test_pickle_resolves_through_an_alias(tmp_path):
+    got = scan_src(tmp_path, "import pickle as p\ndef f(b):\n    return p.loads(b)\n")
+    assert "builtin.pickle-load" in rules(got)
+
+
+def test_json_loads_is_not_pickle(tmp_path):
+    got = scan_src(tmp_path, "import json\ndef f(b):\n    return json.loads(b)\n")
+    assert "builtin.pickle-load" not in rules(got)
+
+
 def test_non_secret_name_is_quiet(tmp_path):
     got = scan_src(tmp_path, "greeting = 'hello there friend'\n")
     assert "builtin.hardcoded-secret" not in rules(got)
