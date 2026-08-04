@@ -189,3 +189,50 @@ def test_scan_survives_missing_binaries(tmp_path):
     (tmp_path / "m.py").write_text("import os\ndef f(c):\n    os.system(c)\n", encoding="utf-8")
     got = scanners.scan(str(tmp_path))
     assert any(f.rule_id == "builtin.os-system" for f in got)
+
+
+# -- a dead scanner is not a clean scan ----------------------------------------------------
+
+class _Proc:
+    def __init__(self, code, out="", err=""):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
+def test_a_scanner_that_dies_raises_rather_than_returning_nothing(tmp_path, monkeypatch):
+    """The real case: semgrep refuses `--config=auto` with `--metrics=off`, exits non-zero and
+    prints its error to stderr. That used to arrive as `semgrep -> 0 findings`."""
+    monkeypatch.setattr(
+        scanners.subprocess, "run",
+        lambda *a, **k: _Proc(2, "", "Cannot create auto config when metrics are off."))
+    with pytest.raises(scanners.ScannerFailed) as exc:
+        scanners._run(["semgrep"], str(tmp_path))
+    assert "metrics are off" in str(exc.value)
+
+
+def test_a_nonzero_exit_with_output_is_findings_not_failure(tmp_path, monkeypatch):
+    """Scanners exit non-zero *because* they found something. That must still parse."""
+    monkeypatch.setattr(scanners.subprocess, "run", lambda *a, **k: _Proc(1, '{"results": []}'))
+    assert scanners._run(["semgrep"], str(tmp_path)) == '{"results": []}'
+
+
+def test_output_that_is_not_json_is_a_failure(tmp_path):
+    with pytest.raises(scanners.ScannerFailed):
+        scanners._checked("Traceback (most recent call last):", "semgrep")
+
+
+def test_empty_output_is_not_a_failure(tmp_path):
+    assert scanners._checked("", "semgrep") == ""
+
+
+def test_a_failed_scanner_is_reported_not_counted_as_zero(tmp_path, monkeypatch):
+    """The property that matters end to end: the run says the report is incomplete."""
+    (tmp_path / "m.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(scanners, "_have", lambda binary: binary == "semgrep")
+    monkeypatch.setattr(
+        scanners, "run_semgrep",
+        lambda repo: (_ for _ in ()).throw(scanners.ScannerFailed("exit 2: broke")))
+    lines = []
+    scanners.scan(str(tmp_path), log=lines.append)
+    assert any("FAILED" in line for line in lines)
+    assert any("incomplete" in line for line in lines)
+    assert not any("semgrep -> 0 findings" in line for line in lines)

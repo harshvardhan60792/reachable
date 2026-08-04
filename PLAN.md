@@ -2,7 +2,7 @@
 
 **Source of truth for project status. Update this when a phase moves.**
 
-Last updated: 2026-08-01
+Last updated: 2026-08-04
 
 ---
 
@@ -31,7 +31,9 @@ Phases 1-5 are the MVP. Shipping them alone is a complete, defensible tool.
 Subprocess-wrap three free scanners and normalize their wildly different JSON shapes into one
 `Finding` dataclass.
 
-- `semgrep --config=auto --json`
+- `semgrep --config=p/python --config=p/security-audit --config=p/secrets --metrics=off --json`
+  (not `--config=auto`, which Semgrep refuses when metrics are off — see VERIFICATION.md,
+  defect 8)
 - `osv-scanner --format json -r .`
 - `gitleaks detect --report-format json`
 
@@ -44,10 +46,11 @@ Implemented in `reachable/scanners.py`.
 
 ## Phase 1b — Built-in rule scanner — DONE
 
-Added because none of the three external scanners could be installed on the development
-machine: Semgrep has no native Windows support, and OSV-Scanner and Gitleaks are separate
-binary installs. Requiring three external tools before anyone can see what this does is enough
-friction to stop people trying it at all.
+Added because none of the three external scanners was installed on the development machine.
+OSV-Scanner and Gitleaks are separate binary installs. Semgrep was assumed unavailable on
+Windows; that turned out to be wrong -- `pip install semgrep` gives a working 1.172.0 -- but
+the reason for this phase stands: requiring three external tools before anyone can see what
+this does is enough friction to stop people trying it at all.
 
 A small AST scanner covering high-signal, low-false-positive patterns: `shell=True`,
 `os.system`, `eval`/`exec` on non-literals, pickle loads, unsafe `yaml.load`, MD5/SHA1,
@@ -215,8 +218,9 @@ repo equally. This filters `requests` down to zero reachable, confirms 12 of 15 
 deliberately vulnerable app, and finds a genuine `verify=False` on a live network call in
 httpie with a verified 5-hop path.
 
-**The audit found six defects, four of them false UNREACHABLE.** A seventh turned up later,
-from pointing the tool at a sixth repository. See VERIFICATION.md. Summary:
+**The audit found six defects, four of them false UNREACHABLE.** Two more turned up later,
+from pointing the tool at a sixth repository and from installing Semgrep for the first time.
+See VERIFICATION.md. Summary:
 
 1. Class-body registrations (`digest_method = staticmethod(_lazy_sha1)`) were invisible —
    reported Flask's session-signing hash as dead code.
@@ -230,6 +234,11 @@ from pointing the tool at a sixth repository. See VERIFICATION.md. Summary:
    names and is safe. Found on `edgecheck`, reproduced on `cve-bin-tool`. The builtin scanner
    now resolves a call's receiver through the file's own imports before matching a stdlib name,
    which also picked up `import os as o; o.system(c)` and `import pickle as p; p.loads(b)`.
+8. **Semgrep never ran, and that was reported as `semgrep -> 0 findings`.** `--config=auto`
+   and `--metrics=off` are mutually exclusive; Semgrep exited 2 and printed nothing, and an
+   empty stdout became an empty finding list. Rulesets are now named explicitly, and a scanner
+   that dies raises `ScannerFailed` instead of returning nothing. The worst defect found so
+   far: a dead scanner looked exactly like a clean scan.
 
 Every one has a regression test.
 
@@ -246,7 +255,9 @@ boundary. Six issues found and fixed:
 2. BOM-prefixed files raised `SyntaxError` and vanished from the graph — silent false
    negatives, and common on Windows. Now read as `utf-8-sig`.
 3. Workflow installed OSV-Scanner via `curl | sh` from a branch URL. Now pinned releases.
-4. Semgrep `--config=auto` uploaded usage metrics. Now `--metrics=off`.
+4. Semgrep uploaded usage metrics by default. Now `--metrics=off` — which turned out to be
+   incompatible with the `--config=auto` already in place and silently disabled Semgrep
+   entirely. See defect 8.
 5. Fork PRs get a read-only token, so the comment step would fail. Marked
    `continue-on-error` rather than switching to the more dangerous `pull_request_target`.
 6. `load_raw` crashed on unexpected keys in a cached findings file.
@@ -255,24 +266,30 @@ Reviewed and sound: HTML escaping, no shell invocation, path traversal inert, sy
 followed, cycles terminate, no third-party dependencies. Self-scan is clean — the only
 findings are the deliberately vulnerable test fixtures.
 
-71 tests pass.
+76 tests pass.
 
 ## Next steps, in order
 
-1. **Exercise the external scanners.** Semgrep/OSV/Gitleaks have never been run against live
-   output — every validated finding came from the built-in rules, because Semgrep has no
-   native Windows support. Run the pipeline on Linux (or in the Phase 6 Action) and confirm
-   the three parsers handle real scanner JSON. `_dep_verdict` is the least-tested path in
-   the codebase and no OSV verdict has ever been checked.
-2. Decide how test code should be treated. Right now pytest functions come back UNREACHABLE
+1. **Exercise OSV-Scanner and Gitleaks.** Semgrep is now done: it runs on Windows via pip
+   (`pip install semgrep`, 1.172.0), and the first live run immediately exposed defect 8 and
+   then produced a correct REACHABLE verdict on `edgecheck` with a three-hop path. OSV and
+   Gitleaks are Go binaries and still have never been run against live output, so
+   `parse_osv`, `parse_gitleaks` and `_dep_verdict` remain unexercised — `_dep_verdict` is
+   the least-tested path in the codebase and no OSV verdict has ever been checked. Run the
+   pipeline on Linux, or in the Phase 6 Action.
+2. **Carry scanner failures into the report, not just the log.** Defect 8 is fixed at the
+   CLI — `report.md` and `report.html` still render a failed run identically to a clean one.
+   The honest version needs `report.write` to know which scanners ran, which changes its
+   signature.
+3. Decide how test code should be treated. Right now pytest functions come back UNREACHABLE
    because pytest collects them dynamically. Arguably correct for triage — a vulnerability
    only reachable from tests is not production-exploitable — but it is currently an accident
    of the implementation rather than a decision. Make it explicit, probably a `--tests`
    flag with a documented default.
-3. Run the Phase 6 workflow on a real pull request.
-4. Expand `tests/fixtures/sample_app/` with adversarial cases: decorator indirection, dynamic
+4. Run the Phase 6 workflow on a real pull request.
+5. Expand `tests/fixtures/sample_app/` with adversarial cases: decorator indirection, dynamic
    dispatch through `getattr`, deep call chains, dead-but-imported modules.
-5. Try a much larger repo (10k+ functions), ideally Django or async-heavy where dynamic
+6. Try a much larger repo (10k+ functions), ideally Django or async-heavy where dynamic
    dispatch is densest. Current largest sample is 1698 functions at 3.6s.
 
 ## Deliberately not doing

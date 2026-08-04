@@ -4,12 +4,13 @@ PLAN.md listed this as next step #1: the entire claim rests on the verdicts bein
 passing tests do not substitute for reading the code.
 
 Every verdict below was checked by opening the file at the reported line and tracing the
-claimed path by hand. **Seven defects were found and fixed.** Four of them were false
+claimed path by hand. **Eight defects were found and fixed.** Four of them were false
 `UNREACHABLE` — the one error class this tool must never make, because it tells someone to
-ignore live code.
+ignore live code. Defect 8 is worse than any of them: Semgrep was never running at all, and
+the run reported that as zero findings.
 
-Audited: 5 repositories, 42 findings, every verdict. Defect 7 came later, from pointing the
-tool at a sixth repository.
+Audited: 5 repositories, 42 findings, every verdict. Defects 7 and 8 came later, from pointing
+the tool at a sixth repository and from installing Semgrep for the first time.
 
 ---
 
@@ -139,6 +140,56 @@ Worth noting what did **not** go wrong: the verdict on the bad finding was `UNRE
 which was correct — the triage layer did its job on top of a wrong rule. The false positive
 was in the scanner, and it is exactly the noise the reachability layer exists to absorb.
 
+### 8. Semgrep never ran, and the run reported it as zero findings
+
+**Found on:** the first run with Semgrep actually installed — `edgecheck`.
+
+`run_semgrep` passed `--config=auto` and `--metrics=off` together. Semgrep refuses the
+combination:
+
+```
+[ERROR]: Cannot create auto config when metrics are off.
+```
+
+`auto` is *defined* as "ask the registry what to run for this project", which requires the
+upload `--metrics=off` forbids. Semgrep exited 2, wrote the error to stderr, and printed
+nothing to stdout. `_run` returned that empty stdout, `if not out: return []` turned it into an
+empty finding list, and the run printed:
+
+```
+running semgrep ...
+  semgrep -> 0 findings
+```
+
+**A dead scanner reported as a clean scan.** Worse than any false verdict: the whole pipeline
+looked healthy, and the number it printed was indistinguishable from a genuine all-clear. The
+two changes that produced it were each individually correct — `--metrics=off` came from the
+security review (PLAN.md, security item 4), `--config=auto` from Phase 1 — and no test caught
+the combination because the tests are hermetic and never execute a real scanner.
+
+Two fixes, because there are two defects here:
+
+1. **Name the rulesets.** `p/python`, `p/security-audit`, `p/secrets` instead of `auto`. Keeps
+   metrics off, and makes the rule set reproducible between runs rather than whatever the
+   registry decides today.
+2. **Never turn a failure into an empty result.** `ScannerFailed` is raised when a scanner
+   exits non-zero *with no stdout at all*, when it cannot start, when it times out, or when
+   its output is not JSON. Non-zero *with* output is still findings — scanners exit 1 because
+   they found something, which is why exit code alone was never usable. The driver catches it
+   per scanner, logs `FAILED ... and that is not a clean result`, and closes the run with
+   `warning: semgrep did not complete; this report is incomplete, not clean`.
+
+Regression tests: `test_a_scanner_that_dies_raises_rather_than_returning_nothing` (the literal
+metrics error string), `test_a_nonzero_exit_with_output_is_findings_not_failure`,
+`test_a_failed_scanner_is_reported_not_counted_as_zero`.
+
+After the fix, the same run on `edgecheck` returns **1 finding, REACHABLE**, with the path
+`cli.fetch -> StooqSource.fetch -> StooqSource._download` — `p/security-audit`'s
+`dynamic-urllib-use-detected` on `urllib.request.urlopen(url)`. The path is correct and the
+finding is genuine-but-benign: the host is a hardcoded `https://` literal, so the `file://`
+scheme the rule warns about is unreachable. Audit-grade warning, correctly surfaced, correctly
+traced.
+
 ---
 
 ## Verdicts confirmed correct
@@ -256,10 +307,14 @@ the pipeline of a security tool. Replaced with pinned release binaries at fixed 
 
 ### S4. Semgrep uploaded usage metrics by default
 
-`--config=auto` enables metrics reporting. This tool promises local-only analysis, so quietly
-phoning home about a codebase someone pointed a scanner at breaks that promise. Added
-`--metrics=off`. `--config=auto` still fetches the rule registry over the network; that is a
-deliberate trade for rule coverage and is now documented as the only outbound request.
+Semgrep enables metrics reporting by default. This tool promises local-only analysis, so
+quietly phoning home about a codebase someone pointed a scanner at breaks that promise. Added
+`--metrics=off`. Fetching the rulesets is still a network request; that is a deliberate trade
+for rule coverage and is now documented as the only outbound request.
+
+**This fix caused defect 8** — see above. `--metrics=off` is incompatible with the
+`--config=auto` that was already there, and the combination silently disabled Semgrep for
+every run until someone finally installed it.
 
 ### S5. `pull_request` + fork PRs would fail the job
 

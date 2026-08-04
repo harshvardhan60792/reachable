@@ -2,9 +2,8 @@
 
 This is deliberately *not* trying to replace Semgrep. It covers a short list of high-signal,
 low-false-positive patterns so the tool produces meaningful output on a machine with nothing
-installed — which matters more than it sounds. Semgrep has no native Windows support, and
-requiring three external binaries before anyone can see what the tool does is the kind of
-friction that stops people trying it at all.
+installed — which matters more than it sounds. Requiring three external binaries before anyone
+can see what the tool does is the kind of friction that stops people trying it at all.
 
 When Semgrep is installed it runs too, and both sets of findings flow through the same
 reachability analysis.

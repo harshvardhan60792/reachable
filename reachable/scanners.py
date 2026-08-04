@@ -22,10 +22,21 @@ def _have(binary: str) -> bool:
     return shutil.which(binary) is not None
 
 
-def _run(cmd: List[str], cwd: str) -> Optional[str]:
-    """Run a scanner. Returns stdout, or None if it could not run at all.
+class ScannerFailed(Exception):
+    """A scanner was installed, started, and produced nothing usable.
 
-    Scanners exit non-zero when they find things, so exit code is not treated as failure.
+    Distinct from "not installed", and it must never be reported as zero findings. An empty
+    result that actually means the scanner died is a clean bill of health nobody earned, which
+    is the worst thing a security tool can print.
+    """
+
+
+def _run(cmd: List[str], cwd: str) -> Optional[str]:
+    """Run a scanner and return stdout.
+
+    Scanners exit non-zero when they find things, so a non-zero code on its own is not a
+    failure. A non-zero code *with no stdout at all* is: the scanner never got as far as
+    emitting its report.
     """
     try:
         proc = subprocess.run(
@@ -35,9 +46,30 @@ def _run(cmd: List[str], cwd: str) -> Optional[str]:
             text=True,
             timeout=TIMEOUT,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired:
+        raise ScannerFailed("timed out after %ds" % TIMEOUT)
+    except OSError as exc:
+        raise ScannerFailed("could not start: %s" % exc)
+    if proc.returncode != 0 and not (proc.stdout or "").strip():
+        detail = " ".join((proc.stderr or "").split())[:300] or "no output"
+        raise ScannerFailed("exit %d: %s" % (proc.returncode, detail))
     return proc.stdout
+
+
+def _checked(raw: Optional[str], binary: str) -> str:
+    """Reject output that is not JSON at all.
+
+    The parsers tolerate odd *shapes* on purpose -- scanner output is untrusted input. Output
+    that does not parse at all is a different thing: the scanner printed an error where its
+    report should have been, and swallowing that reads as zero findings.
+    """
+    if not raw or not raw.strip():
+        return ""
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError:
+        raise ScannerFailed("output was not JSON: %s" % " ".join(raw.split())[:200])
+    return raw
 
 
 def _norm_path(path: str, repo: str) -> str:
@@ -53,18 +85,25 @@ def _norm_path(path: str, repo: str) -> str:
 
 # --------------------------------------------------------------------------- semgrep
 
+#: Semgrep rulesets, named explicitly. `--config=auto` cannot be used: it is *defined* as
+#: "ask the registry what to run for this project", which requires the upload that
+#: `--metrics=off` forbids, and Semgrep refuses the combination outright --
+#: "Cannot create auto config when metrics are off". Naming the rulesets keeps metrics off,
+#: makes the rule set reproducible between runs, and still covers the same ground.
+SEMGREP_CONFIGS = ("p/python", "p/security-audit", "p/secrets")
+
+
 def run_semgrep(repo: str) -> List[Finding]:
-    # --metrics=off matters: with `--config=auto` Semgrep uploads usage metrics by default.
-    # This tool promises local-only analysis, and silently phoning home about a codebase
-    # someone pointed a security scanner at would break that promise.
+    # --metrics=off matters: Semgrep uploads usage metrics by default. This tool promises
+    # local-only analysis, and silently phoning home about a codebase someone pointed a
+    # security scanner at would break that promise.
     #
-    # `--config=auto` still fetches the rule registry over the network. That is a deliberate
-    # trade for rule coverage, and it is the only outbound request the pipeline makes.
-    out = _run(
-        ["semgrep", "--config=auto", "--metrics=off", "--json", "--quiet",
-         "--no-git-ignore", "."],
-        repo,
-    )
+    # Fetching the named rulesets is still a network request. That is a deliberate trade for
+    # rule coverage, and it is the only outbound request the pipeline makes.
+    cmd = ["semgrep"]
+    cmd += ["--config=%s" % c for c in SEMGREP_CONFIGS]
+    cmd += ["--metrics=off", "--json", "--quiet", "--no-git-ignore", "."]
+    out = _checked(_run(cmd, repo), "semgrep")
     if not out:
         return []
     return parse_semgrep(out, repo)
@@ -98,7 +137,7 @@ def parse_semgrep(raw: str, repo: str) -> List[Finding]:
 # ------------------------------------------------------------------------ osv-scanner
 
 def run_osv(repo: str) -> List[Finding]:
-    out = _run(["osv-scanner", "--format", "json", "-r", "."], repo)
+    out = _checked(_run(["osv-scanner", "--format", "json", "-r", "."], repo), "osv-scanner")
     if not out:
         return []
     return parse_osv(out, repo)
@@ -165,6 +204,7 @@ def run_gitleaks(repo: str) -> List[Finding]:
         ["gitleaks", "detect", "--no-banner", "--report-format", "json", "--report-path", "-"],
         repo,
     )
+    out = _checked(out, "gitleaks")
     if not out:
         return []
     return parse_gitleaks(out, repo)
@@ -212,13 +252,23 @@ def scan(repo: str, log=None, use_builtin: bool = True) -> List[Finding]:
     findings: List[Finding] = []
     ran_any = False
 
+    failed: List[str] = []
+
     for binary, fn in SCANNERS:
         if not _have(binary):
             log("skip %s (not installed)" % binary)
             continue
         ran_any = True
         log("running %s ..." % binary)
-        got = fn(repo)
+        try:
+            got = fn(repo)
+        except ScannerFailed as exc:
+            # Never fall through to "0 findings". An installed scanner that died leaves a
+            # hole in the coverage, and the run has to say so out loud.
+            failed.append(binary)
+            log("  %s FAILED (%s) -- no findings from it, and that is not a clean result"
+                % (binary, exc))
+            continue
         log("  %s -> %d findings" % (binary, len(got)))
         findings.extend(got)
 
@@ -231,6 +281,10 @@ def scan(repo: str, log=None, use_builtin: bool = True) -> List[Finding]:
         findings.extend(builtin_scan.scan(repo, log))
     elif not ran_any:
         log("warning: no scanner ran; there is nothing to triage")
+
+    if failed:
+        log("warning: %s did not complete; this report is incomplete, not clean"
+            % ", ".join(failed))
 
     return findings
 
