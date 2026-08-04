@@ -4,13 +4,14 @@ PLAN.md listed this as next step #1: the entire claim rests on the verdicts bein
 passing tests do not substitute for reading the code.
 
 Every verdict below was checked by opening the file at the reported line and tracing the
-claimed path by hand. **Eight defects were found and fixed.** Four of them were false
+claimed path by hand. **Nine defects were found and fixed.** Five of them were false
 `UNREACHABLE` — the one error class this tool must never make, because it tells someone to
 ignore live code. Defect 8 is worse than any of them: Semgrep was never running at all, and
 the run reported that as zero findings.
 
-Audited: 5 repositories, 42 findings, every verdict. Defects 7 and 8 came later, from pointing
-the tool at a sixth repository and from installing Semgrep for the first time.
+Audited: 5 repositories, 42 findings, every verdict, then a 22-repository corpus run. Defects
+7 through 9 came out of that second pass — the first repositories to be scanned with Semgrep
+actually working.
 
 ---
 
@@ -201,6 +202,49 @@ After the fix, the same run on `edgecheck` returns **1 finding, REACHABLE**, wit
 finding is genuine-but-benign: the host is a hardcoded `https://` literal, so the `file://`
 scheme the rule warns about is unreachable. Audit-grade warning, correctly surfaced, correctly
 traced.
+
+
+### 9. A class named only in a string → false UNREACHABLE across a whole subsystem
+
+**Found on:** `gunicorn/asgi/websocket.py:186`, reported UNREACHABLE. Live WebSocket
+handshake code.
+
+The call graph was right about everything it could see:
+
+```
+ASGIWorker.run -> ASGIWorker._serve -> ASGIProtocol._handle_websocket
+                                    -> WebSocketProtocol._send_accept
+```
+
+Every edge existed. Nothing reached `ASGIWorker`, because gunicorn does not name it in code:
+
+```python
+# gunicorn/workers/__init__.py
+SUPPORTED_WORKERS = {"asgi": "gunicorn.workers.gasgi.ASGIWorker", ...}
+```
+
+resolved through `util.load_class` at runtime. One unreferenced class at the top, and
+gunicorn's entire ASGI subsystem read as dead code — 40 of its 57 findings came back
+UNREACHABLE.
+
+Fix: a string literal that resolves *exactly* to a first-party function or class is an entry
+point reference. The shape is everywhere once you look — Django `MIDDLEWARE` and
+`AUTHENTICATION_BACKENDS`, DRF's `DEFAULT_*_CLASSES`, Scrapy `ITEM_PIPELINES`, logging
+`dictConfig`, and every `setuptools` entry point, which is why `module:attr` resolves too.
+
+Exact matches only. The lesson from defect 4 is that an entry point rule which over-fires
+destroys the filtering the tool exists for, so the pattern is anchored: prose mentioning a
+dotted path marks nothing, and a bare word can never match a same-named function. Measured
+across the corpus, it fires only where a framework actually configures by string — `requests`,
+`httpx` and `flask` gained zero entry points from it; `scrapy` gained 324 and `celery` 585,
+which is what those two frameworks genuinely do.
+
+Regression tests: `test_a_class_named_only_in_a_string_is_an_entry_point`,
+`test_the_finding_behind_the_string_is_reachable`, `test_a_class_no_string_names_stays_dead`,
+`test_prose_mentioning_a_dotted_path_marks_nothing`, `test_the_fixture_keeps_its_dead_code`.
+
+**This is the defect that justifies the corpus run.** 88 passing tests never found it. One
+real repository did, in the first hour.
 
 ---
 

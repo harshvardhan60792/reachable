@@ -210,3 +210,96 @@ def test_report_writes_all_three_artifacts(graph, tmp_path):
     # The report must be openable offline: no external asset may be referenced.
     for marker in ("http://", "https://", "<script"):
         assert marker not in html
+
+
+# ------------------------------------------------------- configured by string literal
+
+WORKER_SRC = "\n".join([
+    "import hashlib",
+    "class AsgiWorker:",
+    "    def run(self):",
+    "        return self._serve()",
+    "    def _serve(self):",
+    "        return hashlib.sha1(b'x').hexdigest()",
+    "",
+])
+
+ORPHAN_SRC = "\n".join([
+    "import hashlib",
+    "class NeverNamed:",
+    "    def run(self):",
+    "        return hashlib.sha1(b'y').hexdigest()",
+    "",
+])
+
+
+def _string_configured_repo(tmp_path):
+    """A worker class reachable only through a string, the way gunicorn selects one."""
+    pkg = tmp_path / "app"
+    pkg.mkdir(exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "registry.py").write_text(
+        'WORKERS = {"asgi": "app.worker.AsgiWorker"}\n', encoding="utf-8")
+    (pkg / "worker.py").write_text(WORKER_SRC, encoding="utf-8")
+    (pkg / "orphan.py").write_text(ORPHAN_SRC, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='app'\n", encoding="utf-8")
+    built = callgraph.build(str(tmp_path))
+    entrypoints.detect(str(tmp_path), built)
+    return built
+
+
+def test_a_class_named_only_in_a_string_is_an_entry_point(tmp_path):
+    """Regression for a false UNREACHABLE found on gunicorn: its whole ASGI subsystem, live
+    WebSocket handshake included, read as dead because the worker is selected by string."""
+    built = _string_configured_repo(tmp_path)
+    fn = built.functions["app.worker.AsgiWorker.run"]
+    assert fn.is_entry
+    assert "string literal" in fn.entry_reason
+
+
+def test_the_finding_behind_the_string_is_reachable(tmp_path):
+    built = _string_configured_repo(tmp_path)
+    finding = Finding(id="s", tool="builtin", severity="MEDIUM", message="sha1",
+                      file="app/worker.py", line=6, rule_id="builtin.weak-hash")
+    verdict = reachability.analyze([finding], built)[0]
+    assert verdict.status == REACHABLE
+    assert verdict.path[-1] == "app.worker.AsgiWorker._serve"
+
+
+def test_a_class_no_string_names_stays_dead(tmp_path):
+    """The other direction, and the one that matters: an entry point rule that over-fires
+    marks everything reachable and destroys the filtering this tool exists for."""
+    built = _string_configured_repo(tmp_path)
+    assert not built.functions["app.orphan.NeverNamed.run"].is_entry
+    finding = Finding(id="o", tool="builtin", severity="MEDIUM", message="sha1",
+                      file="app/orphan.py", line=4, rule_id="builtin.weak-hash")
+    # UNKNOWN, not UNREACHABLE: it is a public class in a shipped package, so a consumer
+    # could construct it -- the rule from defect 4. The property being asserted is that the
+    # string rule did not promote it to REACHABLE.
+    assert reachability.analyze([finding], built)[0].status == UNKNOWN
+
+
+def test_prose_mentioning_a_dotted_path_marks_nothing(tmp_path):
+    """The pattern is anchored: a docstring that happens to name a class is not a wiring."""
+    _string_configured_repo(tmp_path)
+    (tmp_path / "app" / "notes.py").write_text(
+        '"""See app.orphan.NeverNamed for the details."""\n', encoding="utf-8")
+    built = callgraph.build(str(tmp_path))
+    entrypoints.detect(str(tmp_path), built)
+    assert not built.functions["app.orphan.NeverNamed.run"].is_entry
+
+
+def test_a_setuptools_style_string_resolves(tmp_path):
+    """`module:attr` is the entry point spelling, and it must resolve the same way."""
+    (tmp_path / "tool.py").write_text("def cli():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "conf.py").write_text('SCRIPT = "tool:cli"\n', encoding="utf-8")
+    built = callgraph.build(str(tmp_path))
+    entrypoints.detect(str(tmp_path), built)
+    assert built.functions["tool.cli"].is_entry
+
+
+def test_the_fixture_keeps_its_dead_code(graph):
+    """sample_app's dead code is the spec for the filtering. No new rule may resurrect it."""
+    resurrected = [q for q, fn in graph.functions.items()
+                   if q.startswith("app.dead") and fn.is_entry]
+    assert resurrected == []

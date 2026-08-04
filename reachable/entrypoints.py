@@ -287,6 +287,49 @@ def _registration_stmts(body):
         yield node
 
 
+# ------------------------------------------------------------------ configured by string
+
+#: A dotted path, or setuptools' `module:attr` form. At least one separator is required, so a
+#: bare word can never match a same-named function. Anchored, so it matches a string that is
+#: *only* a path -- prose that happens to mention one does not count.
+DOTTED_RE = re.compile(r"^[A-Za-z_]\w*(?:[.:][A-Za-z_]\w*)+$")
+
+MAX_DOTTED = 200
+
+
+def _from_dotted_strings(graph: CallGraph) -> None:
+    """A class or function named as a string literal is wired up by name at runtime.
+
+    Found by scanning gunicorn, where the entire ASGI subsystem came back UNREACHABLE --
+    including the live WebSocket handshake -- because the worker is selected by string:
+
+        SUPPORTED_WORKERS = {"asgi": "gunicorn.workers.gasgi.ASGIWorker", ...}
+
+    resolved through `util.load_class` at runtime. The call graph had every edge from
+    `ASGIWorker._serve` onward; nothing reached `ASGIWorker` itself, so a whole live
+    subsystem read as dead code. That is a false UNREACHABLE, the one verdict this tool
+    must never produce.
+
+    The shape is everywhere once you look: Django `MIDDLEWARE` and `AUTHENTICATION_BACKENDS`,
+    DRF's `DEFAULT_*_CLASSES`, Scrapy `ITEM_PIPELINES` and `DOWNLOADER_MIDDLEWARES`, Celery
+    `task_cls`, logging `dictConfig` handlers, and every `setuptools` entry point.
+
+    Only an *exact* match against a first-party function or class counts. Resolving partial
+    or fuzzy names would mark half the repo, and the lesson from the public-API rule is that
+    an entry point rule which over-fires destroys the filtering the tool exists for.
+    """
+    for module, tree in graph.trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            text = node.value.strip()
+            if not text or len(text) > MAX_DOTTED or not DOTTED_RE.match(text):
+                continue
+            qual = text.replace(":", ".")
+            if qual in graph.functions or qual in graph.classes:
+                _mark_api(graph, qual, "named as a string literal in %s" % module)
+
+
 def _from_magic_names(graph: CallGraph) -> None:
     for qual, fn in graph.functions.items():
         short = qual.rsplit(".", 1)[-1]
@@ -329,5 +372,6 @@ def detect(repo: str, graph: CallGraph, log=None) -> None:
     _from_packaging(repo, graph)
     _from_public_api(graph)
     _from_module_level_refs(graph)
+    _from_dotted_strings(graph)
     _from_magic_names(graph)
     log("found %d entry points" % len(graph.entry_points()))
