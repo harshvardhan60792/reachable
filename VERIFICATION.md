@@ -183,6 +183,18 @@ Regression tests: `test_a_scanner_that_dies_raises_rather_than_returning_nothing
 metrics error string), `test_a_nonzero_exit_with_output_is_findings_not_failure`,
 `test_a_failed_scanner_is_reported_not_counted_as_zero`.
 
+The failure is carried all the way into the artifacts, not just the log — a `ScanFailure` per
+dead scanner reaches `report.write`, which puts a banner **above** the counts in `report.md`
+and `report.html` and sets `summary.complete: false` plus a `scan_failures` list in
+`findings.json`. The report is what a reviewer reads and what the Action posts as a PR comment,
+so a run missing a scanner's coverage must not render identically to a run that genuinely found
+nothing. `--fail-on-reachable` now also exits 1 on an incomplete scan: a gate that passes
+because a scanner died is worse than no gate.
+
+The failure reason is the scanner's own stderr, so it crosses the same untrusted boundary as a
+finding message and gets the same `_clean` / `_esc` treatment — tested with the S1 markdown
+forgery payload and an HTML injection payload.
+
 After the fix, the same run on `edgecheck` returns **1 finding, REACHABLE**, with the path
 `cli.fetch -> StooqSource.fetch -> StooqSource._download` — `p/security-audit`'s
 `dynamic-urllib-use-detected` on `urllib.request.urlopen(url)`. The path is correct and the

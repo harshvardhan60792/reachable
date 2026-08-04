@@ -35,6 +35,22 @@ class Finding:
 
 
 @dataclass
+class ScanFailure:
+    """A scanner that was installed, started, and did not produce usable output.
+
+    Carried all the way to the report on purpose. A run missing a scanner's coverage must not
+    render identically to a run that genuinely found nothing -- the report is what a reviewer
+    reads, and "clean" is a claim it has to have earned.
+    """
+
+    scanner: str
+    reason: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class FuncDef:
     """A function or method node in the call graph."""
 

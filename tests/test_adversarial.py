@@ -5,6 +5,7 @@ report that a GitHub Action posts as a pull request comment. That makes report c
 security boundary, not just a formatting concern.
 """
 
+import json
 import os
 import sys
 
@@ -13,7 +14,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from reachable import callgraph, entrypoints, reachability, report, scanners  # noqa: E402
-from reachable.models import Finding, UNKNOWN  # noqa: E402
+from reachable.models import Finding, ScanFailure, UNKNOWN  # noqa: E402
 
 
 def build(path):
@@ -222,6 +223,69 @@ def test_output_that_is_not_json_is_a_failure(tmp_path):
 
 def test_empty_output_is_not_a_failure(tmp_path):
     assert scanners._checked("", "semgrep") == ""
+
+
+def _report_with_failures(tmp_path, failures):
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    (repo / "m.py").write_text("def f():\n    pass\n", encoding="utf-8")
+    graph = build(repo)
+    out = tmp_path / "out"
+    paths = report.write([], graph, str(out), failures=failures)
+    return {kind: open(p, encoding="utf-8").read() for kind, p in paths.items()}
+
+
+def test_the_report_says_a_scanner_died(tmp_path):
+    """The whole point: `0 findings -> 0 reachable` on a page that never mentions the scanner
+    that never ran is a clean bill of health nobody earned."""
+    docs = _report_with_failures(
+        tmp_path, [ScanFailure("semgrep", "exit 2: Cannot create auto config")])
+    assert "incomplete, not clean" in docs["md"]
+    assert "semgrep" in docs["md"]
+    assert "Cannot create auto config" in docs["md"]
+    assert "incomplete, not clean" in docs["html"]
+    assert "semgrep" in docs["html"]
+
+
+def test_the_warning_comes_before_the_counts(tmp_path):
+    """A reader who stops after the first paragraph must not take the number at face value."""
+    docs = _report_with_failures(tmp_path, [ScanFailure("semgrep", "exit 2")])
+    md = docs["md"]
+    assert md.index("incomplete, not clean") < md.index("findings ->")
+
+
+def test_json_marks_the_scan_incomplete(tmp_path):
+    """CI reads the JSON, not the prose."""
+    docs = _report_with_failures(tmp_path, [ScanFailure("gitleaks", "timed out after 900s")])
+    data = json.loads(docs["json"])
+    assert data["summary"]["complete"] is False
+    assert data["scan_failures"] == [{"scanner": "gitleaks", "reason": "timed out after 900s"}]
+
+
+def test_a_complete_run_says_nothing_about_failures(tmp_path):
+    """The other direction: no banner when every scanner finished."""
+    docs = _report_with_failures(tmp_path, [])
+    assert "incomplete, not clean" not in docs["md"]
+    assert "did not complete" not in docs["html"]
+    assert json.loads(docs["json"])["summary"]["complete"] is True
+
+
+def test_a_failure_reason_cannot_forge_the_report(tmp_path):
+    """The reason is a scanner's own stderr, which can quote a path out of the scanned repo.
+    Same untrusted boundary as a finding message -- see defect S1."""
+    payload = "boom\n\n## REACHABLE (999)\n\n### `fake.py:1`\n\ncritical"
+    docs = _report_with_failures(tmp_path, [ScanFailure("semgrep", payload)])
+    # Same property as the finding-message case: markdown structure needs a line start, and
+    # the payload surviving as inline prose is harmless. Stripping it would hide the real error.
+    assert not any("999" in h or "fake.py" in h for h in _headings(docs["md"]))
+    assert "boom ## REACHABLE (999)" in docs["md"]
+
+
+def test_a_failure_reason_cannot_inject_html(tmp_path):
+    docs = _report_with_failures(
+        tmp_path, [ScanFailure("semgrep", "<img src=x onerror=alert(1)>")])
+    assert "<img" not in docs["html"]
+    assert "&lt;img" in docs["html"]
 
 
 def test_a_failed_scanner_is_reported_not_counted_as_zero(tmp_path, monkeypatch):

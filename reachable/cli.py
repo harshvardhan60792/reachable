@@ -8,7 +8,7 @@ import sys
 from typing import List
 
 from . import callgraph, entrypoints, reachability, report, scanners
-from .models import Finding, REACHABLE
+from .models import Finding, REACHABLE, ScanFailure
 
 
 def _make_logger(quiet: bool):
@@ -18,14 +18,14 @@ def _make_logger(quiet: bool):
     return log
 
 
-def _collect(args, log) -> List[Finding]:
+def _collect(args, log, failures: List[ScanFailure]) -> List[Finding]:
     if args.findings:
         log("loading cached findings from %s" % args.findings)
         return scanners.load_raw(args.findings)
     if args.no_scan:
         log("--no-scan: skipping all scanners")
         return []
-    return scanners.scan(args.repo, log, use_builtin=not args.no_builtin)
+    return scanners.scan(args.repo, log, use_builtin=not args.no_builtin, failures=failures)
 
 
 def run(args) -> int:
@@ -38,7 +38,8 @@ def run(args) -> int:
 
     os.makedirs(args.out, exist_ok=True)
 
-    findings = _collect(args, log)
+    failures: List[ScanFailure] = []
+    findings = _collect(args, log, failures)
     if findings and not args.findings:
         scanners.save_raw(findings, os.path.join(args.out, "findings.raw.json"))
 
@@ -57,16 +58,25 @@ def run(args) -> int:
         )
 
     verdicts = reachability.analyze(findings, graph, log)
-    paths = report.write(verdicts, graph, args.out, args.include_unknown, not args.brief)
+    paths = report.write(
+        verdicts, graph, args.out, args.include_unknown, not args.brief, failures
+    )
 
     reachable = sum(1 for v in verdicts if v.status == REACHABLE)
     print("")
+    if failures:
+        print("INCOMPLETE: %s did not run to completion"
+              % ", ".join(f.scanner for f in failures))
     print("%d findings -> %d reachable" % (len(verdicts), reachable))
     for kind in ("md", "html", "json"):
         print("  %-5s %s" % (kind, paths[kind]))
 
-    # Non-zero when something is actually reachable, so CI can gate on it.
-    return 1 if (reachable and args.fail_on_reachable) else 0
+    # Non-zero when something is actually reachable, so CI can gate on it. An incomplete scan
+    # gets the same treatment under the same flag: a gate that passes because a scanner died
+    # is worse than no gate, since it reports success nobody verified.
+    if args.fail_on_reachable and (reachable or failures):
+        return 1
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,7 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--include-unknown", action="store_true", help="show UNKNOWN in report.md")
     scan.add_argument("--brief", action="store_true",
                       help="drop the plain-English explanations from the reports")
-    scan.add_argument("--fail-on-reachable", action="store_true", help="exit 1 if anything is reachable")
+    scan.add_argument("--fail-on-reachable", action="store_true",
+                      help="exit 1 if anything is reachable, or if a scanner did not complete")
     scan.add_argument("--quiet", action="store_true", help="errors only")
     scan.set_defaults(func=run)
 

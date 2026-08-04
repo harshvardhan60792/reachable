@@ -11,10 +11,10 @@ import html
 import json
 import os
 import re
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 from . import explain
-from .models import CallGraph, EXACT, REACHABLE, UNKNOWN, UNREACHABLE, Verdict
+from .models import CallGraph, EXACT, REACHABLE, ScanFailure, UNKNOWN, UNREACHABLE, Verdict
 
 ORDER = (REACHABLE, UNKNOWN, UNREACHABLE)
 
@@ -100,11 +100,35 @@ def _fmt_path(path: List[str]) -> str:
     return " -> ".join(_clean(p, 200) for p in path) if path else ""
 
 
+INCOMPLETE_HEADLINE = "This report is incomplete, not clean"
+
+INCOMPLETE_BODY = (
+    "The scanners listed above were installed and did not finish, so whatever they would have found "
+    "is missing from the counts on this page. A low number here is not evidence of a healthy "
+    "codebase until they run."
+)
+
+
+def _failure_lines(failures) -> List[tuple]:
+    """Normalize and clean failures for display.
+
+    The reason is a scanner's own error text, which can carry a path or a rule name lifted
+    from the repository under scan -- the same untrusted-input boundary as a finding message,
+    and it gets the same treatment.
+    """
+    return [(_clean(f.scanner, 60), _clean(f.reason, 300)) for f in failures or ()]
+
+
 # ----------------------------------------------------------------------------- json
 
-def write_json(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
+def write_json(
+    verdicts: List[Verdict], graph: CallGraph, path: str, failures=()
+) -> None:
     payload = {
         "summary": {
+            # First key on purpose: anything consuming this in CI should be able to gate on
+            # "was the scan even complete" before it reads a single count.
+            "complete": not failures,
             "findings": len(verdicts),
             **{k.lower(): v for k, v in _counts(verdicts).items()},
             "functions": len(graph.functions),
@@ -114,6 +138,7 @@ def write_json(verdicts: List[Verdict], graph: CallGraph, path: str) -> None:
             "unresolved_calls": graph.unresolved,
             "files_parsed": graph.files_parsed,
         },
+        "scan_failures": [f.to_dict() for f in failures or ()],
         "verdicts": [v.to_dict() for v in verdicts],
     }
     with open(path, "w", encoding="utf-8") as fh:
@@ -128,6 +153,7 @@ def write_markdown(
     path: str,
     include_unknown: bool = False,
     plain: bool = True,
+    failures=(),
 ) -> None:
     counts = _counts(verdicts)
     lines: List[str] = []
@@ -135,6 +161,19 @@ def write_markdown(
 
     add("# Reachability report")
     add("")
+
+    # Above the counts, because the counts are what it qualifies. A reader who stops after the
+    # first paragraph must not walk away with a number that a dead scanner made look good.
+    broken = _failure_lines(failures)
+    if broken:
+        add("> **%s.**" % INCOMPLETE_HEADLINE)
+        add(">")
+        for scanner, reason in broken:
+            add("> - `%s` did not complete: %s" % (scanner, reason))
+        add(">")
+        add("> %s" % INCOMPLETE_BODY)
+        add("")
+
     add(
         "**%d findings -> %d reachable.** %d unreachable, %d unknown."
         % (len(verdicts), counts[REACHABLE], counts[UNREACHABLE], counts[UNKNOWN])
@@ -168,7 +207,7 @@ def write_markdown(
         add("")
         add("Each finding below explains what the code does, why it matters, and **how to "
             "check it yourself**. Do the checking. This tool points at code; you decide. Its "
-            "own audit found six bugs in itself, so \"the scanner said so\" is not a good "
+            "own audit found eight bugs in itself, so \"the scanner said so\" is not a good "
             "enough reason to open a pull request.")
         add("")
 
@@ -275,6 +314,11 @@ font-style:italic}
 code{background:var(--code);padding:.1rem .3rem;border-radius:4px;font-size:.85em}
 footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--line);
 color:var(--muted);font-size:.8rem}
+.incomplete{border:1px solid var(--red);border-left-width:3px;border-radius:8px;
+background:var(--card);padding:.9rem 1rem;margin:0 0 1.5rem}
+.incomplete ul{margin:.5rem 0;padding-left:1.2rem}
+.incomplete li{margin:.25rem 0}
+.incomplete p{margin:.5rem 0 0;color:var(--muted);font-size:.87rem}
 """
 
 
@@ -283,7 +327,7 @@ def _esc(s: str) -> str:
 
 
 def write_html(
-    verdicts: List[Verdict], graph: CallGraph, path: str, plain: bool = True
+    verdicts: List[Verdict], graph: CallGraph, path: str, plain: bool = True, failures=()
 ) -> None:
     counts = _counts(verdicts)
     parts: List[str] = []
@@ -294,6 +338,18 @@ def write_html(
     add("<title>Reachability report</title><style>%s</style></head><body><div class=wrap>" % CSS)
 
     add("<h1>Reachability report</h1>")
+
+    lines = _failure_lines(failures)
+    if lines:
+        add("<div class=incomplete>")
+        add("<b>%s.</b>" % _esc(INCOMPLETE_HEADLINE))
+        add("<ul>")
+        for scanner, reason in lines:
+            add("<li><code>%s</code> did not complete: %s</li>" % (_esc(scanner), _esc(reason)))
+        add("</ul>")
+        add("<p>%s</p>" % _esc(INCOMPLETE_BODY))
+        add("</div>")
+
     add(
         "<p class=lede><b>%d</b> findings &rarr; <b>%d</b> reachable.</p>"
         % (len(verdicts), counts[REACHABLE])
@@ -391,6 +447,7 @@ def write(
     out_dir: str,
     include_unknown: bool = False,
     plain: bool = True,
+    failures: Sequence[ScanFailure] = (),
 ) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     paths = {
@@ -398,7 +455,7 @@ def write(
         "md": os.path.join(out_dir, "report.md"),
         "html": os.path.join(out_dir, "report.html"),
     }
-    write_json(verdicts, graph, paths["json"])
-    write_markdown(verdicts, graph, paths["md"], include_unknown, plain)
-    write_html(verdicts, graph, paths["html"], plain)
+    write_json(verdicts, graph, paths["json"], failures)
+    write_markdown(verdicts, graph, paths["md"], include_unknown, plain, failures)
+    write_html(verdicts, graph, paths["html"], plain, failures)
     return paths

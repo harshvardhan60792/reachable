@@ -266,7 +266,7 @@ Reviewed and sound: HTML escaping, no shell invocation, path traversal inert, sy
 followed, cycles terminate, no third-party dependencies. Self-scan is clean — the only
 findings are the deliberately vulnerable test fixtures.
 
-76 tests pass.
+82 tests pass.
 
 ## Next steps, in order
 
@@ -277,19 +277,15 @@ findings are the deliberately vulnerable test fixtures.
    `parse_osv`, `parse_gitleaks` and `_dep_verdict` remain unexercised — `_dep_verdict` is
    the least-tested path in the codebase and no OSV verdict has ever been checked. Run the
    pipeline on Linux, or in the Phase 6 Action.
-2. **Carry scanner failures into the report, not just the log.** Defect 8 is fixed at the
-   CLI — `report.md` and `report.html` still render a failed run identically to a clean one.
-   The honest version needs `report.write` to know which scanners ran, which changes its
-   signature.
-3. Decide how test code should be treated. Right now pytest functions come back UNREACHABLE
+2. Decide how test code should be treated. Right now pytest functions come back UNREACHABLE
    because pytest collects them dynamically. Arguably correct for triage — a vulnerability
    only reachable from tests is not production-exploitable — but it is currently an accident
    of the implementation rather than a decision. Make it explicit, probably a `--tests`
    flag with a documented default.
-4. Run the Phase 6 workflow on a real pull request.
-5. Expand `tests/fixtures/sample_app/` with adversarial cases: decorator indirection, dynamic
+3. Run the Phase 6 workflow on a real pull request.
+4. Expand `tests/fixtures/sample_app/` with adversarial cases: decorator indirection, dynamic
    dispatch through `getattr`, deep call chains, dead-but-imported modules.
-6. Try a much larger repo (10k+ functions), ideally Django or async-heavy where dynamic
+5. Try a much larger repo (10k+ functions), ideally Django or async-heavy where dynamic
    dispatch is densest. Current largest sample is 1698 functions at 3.6s.
 
 ## Deliberately not doing

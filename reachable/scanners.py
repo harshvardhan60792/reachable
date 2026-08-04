@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from typing import Any, Dict, List, Optional
 
-from .models import Finding
+from .models import Finding, ScanFailure
 
 # Scanners can be slow on large repos; cap them rather than hang forever.
 TIMEOUT = 900
@@ -246,8 +246,18 @@ SCANNERS = (
 )
 
 
-def scan(repo: str, log=None, use_builtin: bool = True) -> List[Finding]:
-    """Run every available scanner. Missing binaries are skipped with a warning."""
+def scan(
+    repo: str,
+    log=None,
+    use_builtin: bool = True,
+    failures: Optional[List[ScanFailure]] = None,
+) -> List[Finding]:
+    """Run every available scanner. Missing binaries are skipped with a warning.
+
+    Pass a list as ``failures`` to receive the scanners that died. The return type stays a
+    plain finding list so the stage contract in CLAUDE.md holds, but a caller that writes a
+    report needs to know the difference between "found nothing" and "never ran".
+    """
     log = log or (lambda *_a, **_k: None)
     findings: List[Finding] = []
     ran_any = False
@@ -266,6 +276,8 @@ def scan(repo: str, log=None, use_builtin: bool = True) -> List[Finding]:
             # Never fall through to "0 findings". An installed scanner that died leaves a
             # hole in the coverage, and the run has to say so out loud.
             failed.append(binary)
+            if failures is not None:
+                failures.append(ScanFailure(binary, str(exc)))
             log("  %s FAILED (%s) -- no findings from it, and that is not a clean result"
                 % (binary, exc))
             continue
