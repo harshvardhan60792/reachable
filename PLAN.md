@@ -218,9 +218,8 @@ repo equally. This filters `requests` down to zero reachable, confirms 12 of 15 
 deliberately vulnerable app, and finds a genuine `verify=False` on a live network call in
 httpie with a verified 5-hop path.
 
-**The audit found six defects, four of them false UNREACHABLE.** Two more turned up later,
-from pointing the tool at a sixth repository and from installing Semgrep for the first time.
-See VERIFICATION.md. Summary:
+**The audit found six defects, four of them false UNREACHABLE.** Three more turned up later,
+from a 22-repository corpus run with Semgrep actually working. See VERIFICATION.md. Summary:
 
 1. Class-body registrations (`digest_method = staticmethod(_lazy_sha1)`) were invisible —
    reported Flask's session-signing hash as dead code.
@@ -239,6 +238,12 @@ See VERIFICATION.md. Summary:
    empty stdout became an empty finding list. Rulesets are now named explicitly, and a scanner
    that dies raises `ScannerFailed` instead of returning nothing. The worst defect found so
    far: a dead scanner looked exactly like a clean scan.
+9. **A class named only in a string literal was invisible**, so gunicorn's entire ASGI
+   subsystem — live WebSocket handshake included — came back UNREACHABLE. Frameworks wire
+   classes up by dotted string (`SUPPORTED_WORKERS`, Django `MIDDLEWARE`, Scrapy
+   `ITEM_PIPELINES`, setuptools entry points); an exact string match against a first-party
+   function or class is now an entry point. Fifth false UNREACHABLE, and the one that
+   justifies scanning real repositories: 88 passing tests never found it.
 
 Every one has a regression test.
 
@@ -266,7 +271,7 @@ Reviewed and sound: HTML escaping, no shell invocation, path traversal inert, sy
 followed, cycles terminate, no third-party dependencies. Self-scan is clean — the only
 findings are the deliberately vulnerable test fixtures.
 
-82 tests pass.
+88 tests pass.
 
 ## Next steps, in order
 

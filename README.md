@@ -48,7 +48,7 @@ httpie.core.main -> core.program -> client.collect_messages
   -> client.build_requests_session -> ssl_.HTTPieHTTPSAdapter.get_default_ciphers_names
 ```
 
-The audit also found seven defects in this tool, four of them false UNREACHABLE. All fixed, all
+The audit also found nine defects in this tool, five of them false UNREACHABLE. All fixed, all
 with regression tests. They are written up honestly in VERIFICATION.md rather than quietly
 patched — the failure modes are the most useful thing to know about a tool like this.
 
