@@ -182,7 +182,7 @@ is not yet in a GitHub repository. Verify it on a real pull request before relyi
 Only ever run against `REACHABLE` findings — that is the point of the triage.
 
 Constraints:
-- Runs through the Claude Code CLI the user already pays for. **No metered API key.**
+- Shells out to a coding-agent CLI the user already has installed. **No metered API key.**
 - Output is a diff for human review. Never auto-commit, never auto-push, never auto-open a PR.
 
 The human-review rule is not optional. A fix the submitter cannot explain is worse than no fix:

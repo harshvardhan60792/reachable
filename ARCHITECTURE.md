@@ -32,8 +32,8 @@ space (PatchPilot) is exactly that. The call-graph reachability engine is the di
 1. **Zero cost.** No paid APIs, no hosted services, no API keys, no database, no server.
    Everything is local CLI + Python stdlib + free GitHub Actions tier.
 2. **No runtime LLM calls in the core.** Reachability is pure static analysis. If AI fix
-   suggestion is added (Phase 7), it runs through the Claude Code CLI the user already has,
-   never a metered API key.
+   suggestion is added (Phase 7), it shells out to a coding-agent CLI the user already has
+   installed, never a metered API key.
 3. **Honest confidence.** Python call graphs cannot be exact — dynamic dispatch, getattr,
    duck typing, and monkeypatching all defeat static resolution. Every edge and verdict carries
    a confidence level, and unresolved calls are counted and reported. Never present a guess as
