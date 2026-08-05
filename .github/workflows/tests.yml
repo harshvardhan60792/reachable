@@ -77,7 +77,11 @@ jobs:
           printf 'requests==2.19.1\n' > requirements.txt
           cat > app.py <<'PY'
           import subprocess
-          AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+          # Bait for gitleaks: shaped to match its aws-access-token and github-pat rules.
+          # Not real, and not AWS's documented example key -- gitleaks allowlists that one,
+          # which is why the first version of this job reported zero secrets.
+          AWS_ACCESS_KEY_ID = "AKIA4NPRQ2FZ7XKLM3TW"
+          GITHUB_TOKEN = "ghp_9fK2mQ7xL4vB8nR1sT6wY3zC5dH0jP2aE7gU"
 
           def handler(cmd):
               subprocess.run(cmd, shell=True)
