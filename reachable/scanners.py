@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from .models import Finding, ScanFailure
@@ -199,15 +200,41 @@ def _osv_fixed(vuln: Dict[str, Any], package: str) -> str:
 # --------------------------------------------------------------------------- gitleaks
 
 def run_gitleaks(repo: str) -> List[Finding]:
-    # gitleaks writes the report to a file; "-" sends it to stdout.
-    out = _run(
-        ["gitleaks", "detect", "--no-banner", "--report-format", "json", "--report-path", "-"],
-        repo,
-    )
-    out = _checked(out, "gitleaks")
-    if not out:
+    """Run gitleaks and read back its report file.
+
+    Unlike the other two scanners, gitleaks does not write its report to stdout, and it has no
+    flag that makes it: `--report-path -` creates a file literally named `-`. So the report goes
+    to a temp file and is read back.
+
+    It also exits 1 precisely when it finds something, with an empty stdout — which is exactly
+    the shape `_run` treats as a dead scanner. Hence the separate subprocess call: for gitleaks
+    the report file, not the exit code, is the evidence that it ran.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "gitleaks.json")
+        try:
+            proc = subprocess.run(
+                ["gitleaks", "detect", "--no-banner",
+                 "--report-format", "json", "--report-path", path],
+                cwd=repo, capture_output=True, text=True, timeout=TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise ScannerFailed("timed out after %ds" % TIMEOUT)
+        except OSError as exc:
+            raise ScannerFailed("could not start: %s" % exc)
+
+        if not os.path.exists(path):
+            # No report written at all: gitleaks failed before scanning. Exit 1 with a report
+            # present is the normal "leaks found" case and must not land here.
+            detail = " ".join((proc.stderr or "").split())[:300] or "no output"
+            raise ScannerFailed("exit %d, no report written: %s" % (proc.returncode, detail))
+
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read().strip()
+
+    if not raw:
         return []
-    return parse_gitleaks(out, repo)
+    return parse_gitleaks(raw, repo)
 
 
 def parse_gitleaks(raw: str, repo: str) -> List[Finding]:
