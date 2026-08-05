@@ -42,3 +42,70 @@ jobs:
           python-version: "3.11"
       - run: python -m reachable scan . --out ./out
       - run: cat out/report.md
+
+  external-scanners:
+    # OSV-Scanner and Gitleaks are Go binaries with no Windows-friendly install, so until now
+    # parse_osv, parse_gitleaks and _dep_verdict had never seen live output. _dep_verdict is
+    # the least-tested path in the codebase. This builds a throwaway project that is *known* to
+    # trip both scanners, so a parser that silently returns nothing shows up as zero findings.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the scanners
+        run: |
+          set -euo pipefail
+          pip install semgrep
+          curl -sSfL -o /usr/local/bin/osv-scanner \
+            https://github.com/google/osv-scanner/releases/download/v1.9.2/osv-scanner_1.9.2_linux_amd64
+          chmod +x /usr/local/bin/osv-scanner
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          osv-scanner --version && gitleaks version
+
+      - name: Build a project that trips every scanner
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bait && cd /tmp/bait
+          git init -q . && git config user.email c@i && git config user.name ci
+          # requests 2.19.1 carries published advisories; OSV must report them.
+          printf 'requests==2.19.1\n' > requirements.txt
+          cat > app.py <<'PY'
+          import subprocess
+          AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+          def handler(cmd):
+              subprocess.run(cmd, shell=True)
+
+          if __name__ == "__main__":
+              handler("ls")
+          PY
+          git add -A && git commit -qm bait
+
+      - name: Triage it
+        run: python -m reachable scan /tmp/bait --out ./out --include-unknown
+
+      - name: Every scanner must have produced findings
+        # A dead scanner reported as a clean scan is defect 8 in VERIFICATION.md. Asserting per
+        # tool is the only thing that tells the two apart.
+        run: |
+          python - <<'PY'
+          import json, sys
+          data = json.load(open("out/findings.json"))
+          tools = [v["finding"]["tool"] for v in data["verdicts"]]
+          missing = [t for t in ("semgrep", "osv-scanner", "gitleaks") if t not in tools]
+          print("findings by tool:", {t: tools.count(t) for t in set(tools)})
+          if missing:
+              sys.exit("no findings from: %s -- parser or scanner is broken" % missing)
+          PY
+
+      - run: cat out/report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-scanner-run
+          path: out/
