@@ -76,7 +76,7 @@ DAEMONIZED_TASKS[options.task_id](env)
 No caller names that function anywhere. Dynamic dispatch through a registry is exactly what a
 plain scanner cannot rank and what this tool exists to resolve.
 
-The audit also found nine defects in this tool, five of them false UNREACHABLE. All fixed, all
+The audit also found ten defects in this tool, five of them false UNREACHABLE. All fixed, all
 with regression tests. They are written up honestly in VERIFICATION.md rather than quietly
 patched — the failure modes are the most useful thing to know about a tool like this. Two of
 the nine were found only by running it over unfamiliar code; the test suite passed throughout.
@@ -184,7 +184,7 @@ code, and do not use it against a bug bounty target outside that program's publi
 | Document | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | how the five stages fit together, and which limits are deliberate |
-| [VERIFICATION.md](VERIFICATION.md) | the hand-audit, all nine defects it found, and the security review |
+| [VERIFICATION.md](VERIFICATION.md) | the hand-audit, all ten defects it found, and the security review |
 | [ROADMAP.md](ROADMAP.md) | what is shipped and what is planned |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | setup, standards, and the over-approximation rule |
 
