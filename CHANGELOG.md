@@ -28,9 +28,10 @@ First public release.
 
 ### Fixed
 
-Nine correctness defects and six security issues found by hand-auditing verdicts against real
-source rather than by the test suite. Five of the nine were false `UNREACHABLE`, the one error
-class this tool must not make. All are written up in [VERIFICATION.md](VERIFICATION.md) and all
-have regression tests.
+Ten correctness defects and six security issues found by hand-auditing verdicts against real
+source, and by running the scanners in CI — not by the test suite, which stayed green
+throughout. Five of the ten were false `UNREACHABLE`, the one error class this tool must not
+make; two more were scanners that never ran at all, reporting as clean scans. All are written
+up in [VERIFICATION.md](VERIFICATION.md).
 
 [0.1.0]: https://github.com/harshvardhan60792/reachable/releases/tag/v0.1.0

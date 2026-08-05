@@ -4,7 +4,7 @@ The entire claim rests on the verdicts being right, and passing tests do not sub
 reading the code.
 
 Every verdict below was checked by opening the file at the reported line and tracing the
-claimed path by hand. **Nine defects were found and fixed.** Five of them were false
+claimed path by hand. **Ten defects were found and fixed.** Five of them were false
 `UNREACHABLE` — the one error class this tool must never make, because it tells someone to
 ignore live code. Defect 8 is worse than any of them: Semgrep was never running at all, and
 the run reported that as zero findings.
@@ -248,6 +248,39 @@ real repository did, in the first hour.
 
 ---
 
+### 10. Gitleaks never reported anything, and that read as zero secrets
+
+**Found on:** the first CI run that installed Gitleaks and pointed the tool at a repository
+containing a planted credential. Gitleaks reported `0 findings`. The credential was there.
+
+`run_gitleaks` passed `--report-path -`, with a comment stating that `-` sends the report to
+stdout. Gitleaks has no such convention. It created a file named literally `-` inside the
+scanned repository, wrote the report there, and left stdout empty. Every Gitleaks run since the
+scanner was written had parsed an empty string and returned no findings.
+
+This is **defect 8 in a second scanner**: a tool that never worked, reporting as a clean scan.
+The pattern is worth naming, because both instances survived a green test suite — the tests are
+hermetic and never execute a scanner binary, which is exactly why they cannot catch this class.
+
+The fix exposed a second defect underneath it. Gitleaks exits 1 *precisely when it finds
+secrets*, with an empty stdout — the same shape `_run` raises `ScannerFailed` on. Repairing the
+report path alone would have converted every repository that actually contains a secret into a
+hard scanner failure. Gitleaks now gets its own subprocess call in which the presence of the
+report file, not the exit code, is the evidence that it ran; a missing report is still a
+failure, as it should be.
+
+Found by a CI job that asserts **per tool** that findings were produced. A total-count
+assertion would have stayed green: Semgrep, OSV and the built-in rules between them returned
+15 findings on the same run. Distinguishing "this scanner found nothing" from "this scanner did
+nothing" requires checking each one separately.
+
+One correction worth recording, because it cut the other way. The first version of that job
+planted AWS's own documented example key, which Gitleaks allowlists deliberately. Gitleaks
+reported zero and was right; the fixture was wrong. The bait is now shaped to match its
+`aws-access-token` and `github-pat` rules.
+
+---
+
 ## Verdicts confirmed correct
 
 ### flask (6 findings)
@@ -418,12 +451,13 @@ of the tool became a hard failure with a confusing traceback. Now filters to kno
 
 ## What this audit did not cover
 
-- **External scanners were never exercised against live output.** Semgrep has no native
-  Windows support, and OSV-Scanner and Gitleaks are separate binaries. Every finding above came
-  from the built-in rules. The Semgrep/OSV/Gitleaks parsers are written and unit-shaped but
-  have not been run against real scanner JSON.
-- **No dependency (OSV) verdict was verified**, since OSV-Scanner never ran. `_dep_verdict` is
-  the least-tested path in the codebase.
+- **The hand-audit above used the built-in rules only.** Every verdict traced by hand came from
+  them. All three external scanners have since been exercised against live output by the
+  `external-scanners` CI job — Semgrep 2, OSV 10, Gitleaks 2 findings on a purpose-built
+  repository — which is what exposed defects 8 and 10. That proves the parsers run and produce
+  findings; it is not the same as hand-checking their verdicts, which has not been done.
+- **No dependency (OSV) verdict has been checked by hand.** `_dep_verdict` now runs on every
+  push and produced 10 findings, but nobody has opened the source and confirmed one.
 - **Only Python.** Nothing here says anything about the JS/TS plan.
 - Five repositories is a reasonable sample, not a guarantee. The next most useful test is a
   large Django or async-heavy codebase, where dynamic dispatch is densest.

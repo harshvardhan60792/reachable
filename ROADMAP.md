@@ -22,12 +22,16 @@ the way are recorded in [VERIFICATION.md](VERIFICATION.md).
 - **Reports** — `findings.json`, `report.md`, and a self-contained `report.html`, with
   plain-language explanations of every rule and verdict.
 - **GitHub Action** — triage on each pull request, posted as a comment that updates in place.
+- **Live scanner coverage in CI** — a job that builds a repository engineered to trip Semgrep,
+  OSV-Scanner and Gitleaks, then asserts per tool that each produced findings. Asserting per
+  tool rather than in total is what caught defects 8 and 10, both of which were scanners that
+  never ran reporting as clean scans.
 
 ## Planned
 
-1. **Exercise OSV-Scanner and Gitleaks against live output.** Both are Go binaries and neither
-   has yet been run end to end, so `parse_osv`, `parse_gitleaks` and `_dep_verdict` are the
-   least-tested paths in the codebase. No dependency verdict has ever been checked by hand.
+1. **Hand-check a dependency verdict.** `_dep_verdict` now runs on every push and returns
+   findings, but no OSV verdict has been confirmed by opening the source — the same audit that
+   found ten defects in the reachability engine has never been applied to the dependency path.
 2. **Decide how test code is treated.** Pytest functions currently come back `UNREACHABLE`
    because pytest collects them dynamically. That is arguably the right answer for triage — a
    vulnerability reachable only from tests is not production-exploitable — but today it is an
