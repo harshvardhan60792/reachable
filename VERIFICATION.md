@@ -1,7 +1,7 @@
-# VERIFICATION.md — hand-audit of verdicts against real source
+# Verification — hand-audit of verdicts against real source
 
-PLAN.md listed this as next step #1: the entire claim rests on the verdicts being right, and
-passing tests do not substitute for reading the code.
+The entire claim rests on the verdicts being right, and passing tests do not substitute for
+reading the code.
 
 Every verdict below was checked by opening the file at the reported line and tracing the
 claimed path by hand. **Nine defects were found and fixed.** Five of them were false
@@ -165,8 +165,8 @@ running semgrep ...
 **A dead scanner reported as a clean scan.** Worse than any false verdict: the whole pipeline
 looked healthy, and the number it printed was indistinguishable from a genuine all-clear. The
 two changes that produced it were each individually correct — `--metrics=off` came from the
-security review (PLAN.md, security item 4), `--config=auto` from Phase 1 — and no test caught
-the combination because the tests are hermetic and never execute a real scanner.
+security review below, `--config=auto` from the original scanner integration — and no test
+caught the combination because the tests are hermetic and never execute a real scanner.
 
 Two fixes, because there are two defects here:
 

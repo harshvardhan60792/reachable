@@ -1,7 +1,6 @@
-# ARCHITECTURE.md
+# Architecture
 
-Read this first. It contains everything needed to pick the project up cold: what it is, why it
-exists, how the stages fit together, and which limits are deliberate.
+What the tool is, how its stages fit together, and which limits are deliberate.
 
 ## What this is
 
@@ -13,7 +12,7 @@ Gitleaks) against a Python repo, then answers the question those scanners can't:
 Output: findings split into `REACHABLE` / `UNREACHABLE` / `UNKNOWN`, with the exact call path
 (`entrypoint -> f1 -> f2 -> vulnerable line`) rendered as proof for every reachable one.
 
-## Why it exists (do not lose this framing)
+## Why it exists
 
 Scanners are noise machines. A mid-size repo produces 500-3000 findings; >90% sit in dead code,
 test fixtures, or code paths nothing ever calls. Teams drown and stop looking.
@@ -21,25 +20,24 @@ test fixtures, or code paths nothing ever calls. Teams drown and stop looking.
 Commercial tools (Semgrep Pro, Endor Labs, Socket) charge thousands per year for reachability
 analysis. Open source has almost nothing usable. **That gap is the whole product.**
 
-The pitch, in one line: *"1,847 findings became 12. Here is the call path for each."*
+In one line: *"1,847 findings became 12. Here is the call path for each."*
 
-Anything that does not serve that line is secondary. Resist scope creep toward "another
-scanner wrapper" — wrapping scanners is the commodity part, and a previous project in this
-space (PatchPilot) is exactly that. The call-graph reachability engine is the differentiator.
+Anything that does not serve that line is secondary. Wrapping scanners is the commodity part;
+the call-graph reachability engine is what makes this worth using.
 
-## Non-negotiable constraints
+## Design constraints
 
 1. **Zero cost.** No paid APIs, no hosted services, no API keys, no database, no server.
    Everything is local CLI + Python stdlib + free GitHub Actions tier.
-2. **No runtime LLM calls in the core.** Reachability is pure static analysis. If AI fix
-   suggestion is added (Phase 7), it shells out to a coding-agent CLI the user already has
-   installed, never a metered API key.
+2. **No network calls in the core.** Reachability is pure static analysis, offline and
+   deterministic. If automated fix suggestion is ever added, it shells out to a coding-agent
+   CLI already installed locally, never a metered API.
 3. **Honest confidence.** Python call graphs cannot be exact — dynamic dispatch, getattr,
    duck typing, and monkeypatching all defeat static resolution. Every edge and verdict carries
    a confidence level, and unresolved calls are counted and reported. Never present a guess as
    certainty. Overstated precision is the fastest way to lose credibility with a maintainer.
 4. **Python targets only, for now.** Stdlib `ast` means zero parsing dependencies. JS/TS via
-   tree-sitter is a later phase and is optional.
+   tree-sitter would be a later addition, and is optional.
 
 ## Architecture
 
@@ -90,7 +88,7 @@ Keep these signatures stable. Changing one means touching `cli.py` and the tests
 | `reachable/report.py` | Phase 5 — JSON / Markdown / HTML output |
 | `reachable/cli.py` | argparse entry point, wires stages together |
 | `tests/` | pytest; `tests/fixtures/sample_app/` is a tiny repo with known reachable/dead code |
-| `PLAN.md` | phase status, what is done, what is next — **update this when you finish work** |
+| `ROADMAP.md` | what is shipped and what is planned |
 | `README.md` | human-facing usage |
 
 ## How to run
@@ -119,7 +117,7 @@ The external scanners are optional at runtime. If a binary is missing, that scan
 with a warning and the rest of the pipeline still works — this keeps the tool usable on a
 machine with nothing installed, and keeps tests hermetic.
 
-## Known limitations (state these openly; do not paper over them)
+## Known limitations
 
 - **Name resolution is heuristic.** `obj.method()` where `obj` is a runtime value cannot be
   resolved statically. Falls back to matching on the short method name across the whole repo,
@@ -143,9 +141,11 @@ finding that turns out to be fine. A false UNREACHABLE tells them to ignore a li
 second failure is the one that ends the project's credibility, so every ambiguous case must
 resolve toward REACHABLE or UNKNOWN.
 
-Three rules exist purely because the first real run got this wrong — it reached 6 of 97
-functions and called the rest dead. See PLAN.md, Phase 2, "Three rules added after the first
-real run." If you are tempted to tighten resolution for precision, re-read that section first.
+Three of the resolution rules exist purely because an early build got this wrong — it reached
+6 of 97 functions and called the rest dead. Function references passed as values, methods of
+an instantiated class, and module-level registration tables all had to become edges before the
+numbers meant anything. Tightening resolution for precision tends to reintroduce that failure;
+`VERIFICATION.md` records five separate false `UNREACHABLE` defects found this way.
 
 ## Conventions
 
@@ -157,8 +157,4 @@ real run." If you are tempted to tighten resolution for precision, re-read that 
 
 ## Contributing
 
-- Update `PLAN.md` whenever a phase moves. It is the source of truth for status.
-- Do not add a dependency without a written reason in `PLAN.md`.
-- Do not commit scan output; `out/` is gitignored.
-- Only ever scan public repositories, or repositories the user owns. Never point this at a
-  third party's private code or at a bug bounty target outside its published scope.
+See [CONTRIBUTING.md](CONTRIBUTING.md).

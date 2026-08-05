@@ -1,5 +1,4 @@
 out/
-graphify-out/
 __pycache__/
 *.py[cod]
 *.egg-info/

@@ -1,5 +1,10 @@
 # reachable
 
+[![tests](https://github.com/harshvardhan60792/reachable/actions/workflows/tests.yml/badge.svg)](https://github.com/harshvardhan60792/reachable/actions/workflows/tests.yml)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
+
 Security scanners tell you *what* is wrong. `reachable` tells you what is **actually reachable**.
 
 Point it at a Python repo. It runs Semgrep, OSV-Scanner, and Gitleaks, builds a call graph of
@@ -82,9 +87,15 @@ Requires Python 3.9+. **No third-party dependencies, and no scanners required** 
 rule set runs out of the box.
 
 ```bash
-git clone <this repo>
+git clone https://github.com/harshvardhan60792/reachable
 cd reachable
 python -m reachable scan /path/to/repo
+```
+
+Or install it, which puts a `reachable` command on your path:
+
+```bash
+python -m pip install git+https://github.com/harshvardhan60792/reachable
 ```
 
 For deeper coverage, install any of the external scanners. Anything missing is skipped with a
@@ -168,6 +179,21 @@ Every verdict carries its confidence. `UNREACHABLE` is a claim the tool is willi
 Scan public repositories, or repositories you own. Do not point this at a third party's private
 code, and do not use it against a bug bounty target outside that program's published scope.
 
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | how the five stages fit together, and which limits are deliberate |
+| [VERIFICATION.md](VERIFICATION.md) | the hand-audit, all nine defects it found, and the security review |
+| [ROADMAP.md](ROADMAP.md) | what is shipped and what is planned |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | setup, standards, and the over-approximation rule |
+
+## Contributing
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first — in
+particular the rule that ambiguous resolution must produce `REACHABLE` or `UNKNOWN`, never
+`UNREACHABLE`.
+
 ## License
 
-MIT
+[MIT](LICENSE)
