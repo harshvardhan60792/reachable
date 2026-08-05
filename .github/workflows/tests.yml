@@ -59,10 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           pip install semgrep
+          # v1.x: scanners.py calls the flat `osv-scanner -r .` form, which v2 replaced with
+          # `osv-scanner scan source`. Pinned until the tool speaks v2.
           curl -sSfL -o /usr/local/bin/osv-scanner \
-            https://github.com/google/osv-scanner/releases/download/v1.9.2/osv-scanner_1.9.2_linux_amd64
+            https://github.com/google/osv-scanner/releases/download/v1.9.2/osv-scanner_linux_amd64
           chmod +x /usr/local/bin/osv-scanner
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
             | tar -xz -C /usr/local/bin gitleaks
           osv-scanner --version && gitleaks version
 
@@ -96,7 +98,7 @@ jobs:
           import json, sys
           data = json.load(open("out/findings.json"))
           tools = [v["finding"]["tool"] for v in data["verdicts"]]
-          missing = [t for t in ("semgrep", "osv-scanner", "gitleaks") if t not in tools]
+          missing = [t for t in ("semgrep", "osv", "gitleaks") if t not in tools]
           print("findings by tool:", {t: tools.count(t) for t in set(tools)})
           if missing:
               sys.exit("no findings from: %s -- parser or scanner is broken" % missing)
