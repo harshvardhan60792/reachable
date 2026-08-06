@@ -5,6 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
 
+![demo](demo.png)
+
 Security scanners tell you *what* is wrong. `reachable` tells you what is **actually reachable**.
 
 Point it at a Python repo. It runs Semgrep, OSV-Scanner, and Gitleaks, builds a call graph of
@@ -29,6 +31,15 @@ fixtures, or paths nothing ever calls. Teams drown in the list and stop reading 
 
 Reachability analysis is the fix, and it is normally locked behind commercial tooling that costs
 thousands per year. This does it with the standard library.
+
+## What this replaces
+
+| Tool | Reachability triage | Price | Open source |
+|---|---|---|---|
+| Semgrep Pro | Yes | $40+/dev/month | No |
+| Endor Labs | Yes | Enterprise pricing, thousands/year | No |
+| Socket.dev | Partial (dependency-focused) | $20+/dev/month | No |
+| **reachable** | **Yes** | **$0, forever** | **Yes, MIT** |
 
 ## Does it actually work
 
